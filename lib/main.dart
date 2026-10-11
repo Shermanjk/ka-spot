@@ -9,8 +9,14 @@ import 'services/kaspot_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final url = const String.fromEnvironment('SUPABASE_URL');
-  final anonKey = const String.fromEnvironment('SUPABASE_ANON_KEY');
+  const url = String.fromEnvironment(
+    'SUPABASE_URL',
+    defaultValue: 'https://etuosispxwfmvcupjhkv.supabase.co',
+  );
+  const anonKey = String.fromEnvironment(
+    'SUPABASE_ANON_KEY',
+    defaultValue: 'sb_publishable_XY_ci6YbZ0Ms7Hk8pME4bA_v8Vzhk52',
+  );
   if (url.isNotEmpty && anonKey.isNotEmpty) {
     await Supabase.initialize(url: url, publishableKey: anonKey);
     KaSpotService.configure(Supabase.instance.client);
