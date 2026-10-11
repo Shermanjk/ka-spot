@@ -65,8 +65,11 @@ create table if not exists public.notification_preferences (
   user_id uuid primary key references auth.users(id) on delete cascade,
   connection_notifications_enabled boolean not null default true,
   arrival_alerts_enabled boolean not null default false,
+  background_sharing_enabled boolean not null default false,
   updated_at timestamptz not null default now()
 );
+alter table public.notification_preferences
+  add column if not exists background_sharing_enabled boolean not null default false;
 
 create or replace function public.is_accepted_connection(a uuid, b uuid)
 returns boolean language sql stable security definer set search_path = '' as $$
@@ -153,9 +156,17 @@ alter table public.locations enable row level security;
 alter table public.saved_places enable row level security;
 alter table public.notification_preferences enable row level security;
 
--- A connected person can see only the owner's deliberately published profile fields.
+-- A connected person or connection request participant can see published profile fields.
 create policy profile_self_or_connection_read on public.profiles for select to authenticated
-using (id = (select auth.uid()) or public.is_accepted_connection(id, (select auth.uid())));
+using (
+  id = (select auth.uid())
+  or public.is_accepted_connection(id, (select auth.uid()))
+  or exists (
+    select 1 from public.connection_requests r
+    where (r.requester_id = profiles.id and r.recipient_id = (select auth.uid()))
+       or (r.recipient_id = profiles.id and r.requester_id = (select auth.uid()))
+  )
+);
 create policy profile_self_insert on public.profiles for insert to authenticated
 with check (id = (select auth.uid()));
 create policy profile_self_update on public.profiles for update to authenticated
@@ -258,4 +269,30 @@ $$;
 drop trigger if exists sharing_revocation_clears_location on public.location_sharing;
 create trigger sharing_revocation_clears_location after update of is_enabled or delete on public.location_sharing
 for each row execute function public.remove_unshared_latest_location();
+commit;
+
+-- Automatically provision profile and default notification preferences on signup
+begin;
+create or replace function public.handle_new_user()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+  insert into public.profiles (id, display_name)
+  values (
+    new.id,
+    coalesce(nullif(new.raw_user_meta_data->>'display_name', ''), split_part(new.email, '@', 1), 'KaSpot Member')
+  )
+  on conflict (id) do nothing;
+
+  insert into public.notification_preferences (user_id)
+  values (new.id)
+  on conflict (user_id) do nothing;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function public.handle_new_user();
 commit;
