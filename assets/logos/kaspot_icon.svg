@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradient Matching 'Spot' -->
+    <linearGradient id="iconSpotGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2196F3"/>
+      <stop offset="100%" stop-color="#1976D2"/>
+    </linearGradient>
+
+    <!-- Drop Shadow for the Pin -->
+    <filter id="pinShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#0D47A1" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- Squircle Base / Badge -->
+  <rect width="512" height="512" rx="128" fill="url(#iconSpotGrad)"/>
+
+  <!-- Inner Location Pin -->
+  <g filter="url(#pinShadow)">
+    <path d="M 256 112 
+             C 176 112, 112 176, 112 256 
+             C 112 336, 224 438, 256 464 
+             C 288 438, 400 336, 400 256 
+             C 400 176, 336 112, 256 112 Z" 
+          fill="#FFFFFF"/>
+
+    <!-- Center Blue Dot inside Pin -->
+    <circle cx="256" cy="246" r="48" fill="#1976D2"/>
+  </g>
+</svg>
