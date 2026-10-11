@@ -3,6 +3,20 @@ import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+class AuthResult {
+  final bool isSessionActive;
+  final bool requiresEmailConfirmation;
+  final String? email;
+  final String? message;
+
+  const AuthResult({
+    required this.isSessionActive,
+    this.requiresEmailConfirmation = false,
+    this.email,
+    this.message,
+  });
+}
+
 class KaSpotService {
   KaSpotService._();
   static SupabaseClient? _client;
@@ -69,7 +83,7 @@ class KaSpotService {
     }
   }
 
-  static Future<void> register(String name, String email, String password) async {
+  static Future<AuthResult> register(String name, String email, String password) async {
     final cleanEmail = email.trim().toLowerCase();
     final cleanName = name.trim();
     if (_client != null) {
@@ -78,7 +92,20 @@ class KaSpotService {
         password: password,
         data: {'display_name': cleanName},
       );
-      if (result.session != null) await ensureProfile(name: cleanName);
+      if (result.session != null) {
+        await ensureProfile(name: cleanName);
+        return AuthResult(isSessionActive: true, email: cleanEmail);
+      } else {
+        final identities = result.user?.identities;
+        if (identities != null && identities.isEmpty) {
+          throw const AuthException('An account with this email already exists. Please sign in instead.');
+        }
+        return AuthResult(
+          isSessionActive: false,
+          requiresEmailConfirmation: true,
+          email: cleanEmail,
+        );
+      }
     } else {
       // Local development registration
       if (cleanName.isEmpty) throw Exception('Please enter your name.');
@@ -96,6 +123,17 @@ class KaSpotService {
       };
       profileNotifier.value = _localUser;
       authStateNotifier.value = true;
+      return AuthResult(isSessionActive: true, email: cleanEmail);
+    }
+  }
+
+  static Future<void> resendVerificationEmail(String email) async {
+    final cleanEmail = email.trim().toLowerCase();
+    if (_client != null) {
+      await _client!.auth.resend(
+        type: OtpType.signup,
+        email: cleanEmail,
+      );
     }
   }
 

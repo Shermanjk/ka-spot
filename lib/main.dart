@@ -2,8 +2,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import 'screens/auth_screen.dart';
 import 'screens/home_shell.dart';
+import 'screens/welcome_screen.dart';
 import 'services/background_location_service.dart';
 import 'services/kaspot_service.dart';
 
@@ -143,7 +143,7 @@ class KaSpotApp extends StatelessWidget {
       home: ValueListenableBuilder<bool>(
         valueListenable: KaSpotService.authStateNotifier,
         builder: (context, isAuthenticated, _) {
-          return isAuthenticated ? const HomeShell() : const AuthScreen();
+          return isAuthenticated ? const HomeShell() : const WelcomeScreen();
         },
       ),
     );
