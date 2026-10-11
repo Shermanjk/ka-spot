@@ -1,59 +1,129 @@
 # KaSpot
 
-**Your people. Your places. Your peace of mind.**
+**Stay connected. Wherever life takes you.**
 
-An Android-first Flutter/Dart development foundation for consent-led sharing among trusted people. Map-first, privacy-led, and deliberately without fake live coordinates.
+KaSpot is an Android-first, privacy-led location-sharing Flutter application built for families, couples, and close circles of trust. Engineered around explicit consent, zero historical location trails, and battery-smart background tracking.
 
-## What's included
+---
 
-- Flutter mobile application, map-first navigation and KaSpot visual identity.
-- OpenStreetMap-backed Flutter Map, visible attribution, permission-aware foreground location.
-- Connection, saved-place, notification, profile, and privacy/settings surfaces.
-- Optional Supabase initialization using public client URL/anon key supplied at run time.
-- PostgreSQL schema and RLS policies in `supabase/schema.sql`, including per-recipient sharing consent and a latest-location-only table.
-- Local preview when no backend is configured, explicitly labelled as local preview; no simulated location markers.
+## Key Highlights & Features
 
-## Local development
+### 📍 True Zero-Trail Privacy
+* **Single-Coordinate Architecture**: KaSpot never saves your movement history, route logs, or past breadcrumbs. Only your single latest coordinate is preserved via atomic `UPSERT`.
+* **Explicit, Per-Person Consent**: Connecting with someone does not automatically share your location. Each sharing grant is a separate, mutual choice that can be toggled on or revoked instantly.
 
-Install Flutter stable and Android Studio/Android SDK on a development computer, accept Android SDK licenses (`flutter doctor --android-licenses`), then run:
+### 🔋 Battery-Smart Background Location Tracking
+* **Consent-First**: Disabled by default. Toggled explicitly by the user in Privacy Controls or via the Map quick-actions sheet.
+* **Smart Movement Throttling**: Utilizes a 50-meter distance filter and 30-second interval throttling so the device sleeps while stationary, minimizing battery consumption and network egress.
+* **Android 14+ Compliant**: Runs as an Android foreground service with a persistent status notification (*"KaSpot · Live Sharing Active"*) to ensure complete user transparency.
+* **Partner Map Awareness**: When background tracking is disabled and the app is closed, loved ones' pins clearly display *"App inactive · Last seen Xm ago"*.
 
+### 🗺️ Precision Map Experience
+* **Radial Heartbeat Beacon**: Perfectly centered map marker with an organic slow heartbeat pulsing animation, display name tag, and profile picture avatar.
+* **No Coordinate Drift**: Mathematical center-alignment ensures zero pixel drift across all zoom levels.
+* **OpenStreetMap Integration**: Clean OSM tile rendering with full attribution.
+
+### 🖼️ Smart Profile Picture Compression
+* Client-side optimization downscales images and applies high-efficiency compression, shrinking multi-megabyte photos to 15KB–35KB avatars before upload to conserve cloud storage and network bandwidth.
+
+### ✨ Polished Mobile Interface
+* **Floating Interactive Navigation Bar**: Dynamic pill-style bottom navigation with smooth sliding active indicator and haptic-feel micro-interactions.
+* **SVG Vector Brand Identity**: Bespoke typography with custom location-pin motif.
+
+---
+
+## Tech Stack
+
+* **Framework**: Flutter (Dart 3.x)
+* **Maps**: `flutter_map` with OpenStreetMap
+* **Location Engine**: `geolocator` with foreground service configuration
+* **Backend / Database**: Supabase (PostgreSQL with Row-Level Security and Realtime engine)
+* **Images**: `image_picker` + `image` package optimizer
+
+---
+
+## Project Structure
+
+```
+lib/
+├── main.dart                          # App entry point & background service initialization
+├── screens/
+│   ├── auth_screen.dart               # Email/Password authentication & onboarding
+│   ├── home_shell.dart                # Main container with interactive floating nav bar
+│   ├── map_screen.dart                # Real-time map, pulsing beacon & partner status chips
+│   ├── connections_screen.dart        # Circle management & consent-based sharing grants
+│   ├── places_screen.dart             # Favorite/saved locations
+│   └── profile_screen.dart            # Profile, avatar upload, and Privacy & Controls
+├── services/
+│   ├── background_location_service.dart # Foreground service & battery-smart GPS stream
+│   └── kaspot_service.dart            # Supabase API client, RLS queries & state notifiers
+├── utils/
+│   └── image_optimizer.dart           # Client-side 15KB-35KB image compression
+└── widgets/
+    ├── interactive_nav_bar.dart       # Floating pop-out navigation bar
+    ├── kaspot_avatar.dart             # Avatar widget with fallback initials
+    └── kaspot_logo.dart               # Official KaSpot vector logo & brand colors
+```
+
+---
+
+## Local Development & Setup
+
+### Prerequisites
+* Flutter SDK (3.24+ recommended)
+* Android SDK / Android Studio (with API 34+ build tools)
+
+### 1. Clone the repository
+```sh
+git clone https://github.com/Shermanjk/ka-spot.git
+cd ka-spot
+```
+
+### 2. Install dependencies & verify code
 ```sh
 flutter pub get
 flutter analyze
-flutter test
+```
+
+### 3. Run the application
+To run in local demo mode (no backend required):
+```sh
 flutter run
 ```
 
-For a locally installable debug APK, connect an Android SDK-equipped development computer and run `flutter build apk --debug`; then install `build/app/outputs/flutter-apk/app-debug.apk` with `adb install -r build/app/outputs/flutter-apk/app-debug.apk`. Release signing and an actual device test are not included in this source deliverable.
-
-The hosted Sandbox used to author this source may lack Android SDK/emulator/device access; run `flutter doctor` on your Android development machine. To use Supabase, create a project on an eligible Supabase tier, apply `supabase/schema.sql`, and launch with:
-
+To connect to your own Supabase project:
 ```sh
 flutter run \
   --dart-define=SUPABASE_URL=https://YOUR_PROJECT.supabase.co \
-  --dart-define=SUPABASE_ANON_KEY=YOUR_PUBLIC_ANON_OR_PUBLISHABLE_KEY
+  --dart-define=SUPABASE_ANON_KEY=YOUR_PUBLIC_ANON_KEY
 ```
 
-The anon/publishable key is not a secret; RLS is the security boundary. **Never put a service-role key in the app, command history, source control, or public builds.** No real backend is configured in this workspace. Authentication, account verification/recovery, policy enforcement, and cross-account RLS must be verified against a project with at least two test accounts before live location sharing is treated as production-ready.
+### 4. Build Debug APK
+```sh
+flutter build apk --debug
+```
+The APK output will be located at `build/app/outputs/flutter-apk/app-debug.apk`.
 
-Account-owned rows reference `auth.users` with `ON DELETE CASCADE`, so their profile, connection, sharing, latest-location, place and preference data is removed when the auth account is deleted. This build does not expose an in-app account-deletion button: safe self-service deletion needs a separately reviewed Edge Function or another trusted server path, never a service-role key in the client. Until that is configured, account deletion must be performed through an authorized project-owner workflow.
+---
 
-## Permissions and map tiles
+## Database Setup (Supabase)
 
-Foreground GPS is consent-gated and does not promise background tracking. Coordinates are uploaded on explicit locate/share actions only; there is no periodic or background polling loop. Test permission denial, approximate location, app restart, offline mode, stale timestamps and battery behavior on actual Android devices. No continuous/background tracking or geofencing is enabled by default. The map uses OpenStreetMap data attribution. The default public tile service is for development/demo use, subject to the tile provider's current usage policy, rate limits and availability; it is not an unlimited production tile backend. Choose a compliant provider before broad deployment and keep attribution visible.
+If setting up your own Supabase backend:
+1. Create a new Supabase project at [supabase.com](https://supabase.com).
+2. Open the **SQL Editor** in the Supabase dashboard.
+3. Paste and run the contents of [`supabase/schema.sql`](supabase/schema.sql).
+4. In **Database > Replication**, add `locations` and `location_sharing` to the `supabase_realtime` publication to enable live map updates.
 
-## Supabase and RLS
+---
 
-The schema stores one latest coordinate row per account rather than a location trail. Accepted connection status is created only after a recipient accepts a pending request. Sharing is a separate per-owner/per-recipient grant. The owner writes a location only while at least one sharing grant is enabled; an authorized connected recipient reads only when the grant remains enabled. Pausing/revoking immediately removes the recipient's RLS-visible access, and a database trigger deletes the latest row when the owner's final enabled grant ends. Verify all paths directly using an unrelated account, as well as an allowed account; do not test destructive changes using production user data.
+## Security & Architecture Principles
 
-The map subscribes to RLS-visible `public.locations` inserts/updates and `public.location_sharing` changes, then reloads authorized records. Add both tables to the Supabase `supabase_realtime` publication only after reviewing the project's RLS/realtime setup and quotas; manual refresh remains available if Realtime is not enabled. Location deletes are deliberately not subscribed to, because PostgreSQL change-feed deletes cannot be filtered by RLS in the same way; revocation changes on `location_sharing` cause the recipient view to refresh. Realtime does not itself send push notifications. FCM requires a Firebase project, Android app registration, `google-services.json`, Android Gradle plugin configuration, notification permission/channel setup, token lifecycle, and a separately secured notification sender. Those steps are project-specific and are not claimed complete here. Arrival/departure geofencing and background notifications are not implemented in this starter.
+* **Row-Level Security (RLS)**: Location rows are visible only to users with an active, mutual `location_sharing` grant.
+* **No Secret Keys in Client**: The client application uses only the public publishable/anon key.
+* **Cascade Cleanup**: Deleting an account removes all associated connections, locations, and profile records automatically (`ON DELETE CASCADE`).
 
-## Free tier, availability and costs
+---
 
-This code does not require a paid API or service. Supabase and Firebase free-tier quotas, inactive-project pause rules, notification delivery behavior, data-retention settings and current terms can change; consult each provider's current console and pricing/usage documentation before launch. Free-tier availability is not guaranteed or unlimited. OSM public tiles likewise have capacity and usage rules. No paid service has been added. Avoid high-frequency writes, historical tracks, broad Realtime subscriptions and unnecessary image uploads to conserve quotas and battery.
+## License & Repository
 
-## Current implementation status
-
-This is a development foundation, not a finished production safety product. No external Supabase or Firebase project credentials, device test account, RLS test report, configured FCM sender, physical-device verification, signed APK or production tile contract is supplied. Review and test authorization, location revocation, account deletion/data retention, background behavior and notification flows before release. The UI must not be taken as evidence that backend integrations are active until a real configured project is connected.
-
-The source is suitable for local Git version control. No GitHub remote has been selected; choose a repository and its privacy/ownership settings before pushing the code to GitHub.
+Maintained at [github.com/Shermanjk/ka-spot](https://github.com/Shermanjk/ka-spot).
