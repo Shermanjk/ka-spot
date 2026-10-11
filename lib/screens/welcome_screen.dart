@@ -70,35 +70,6 @@ class WelcomeScreen extends StatelessWidget {
                     ),
                   ),
 
-                  const SizedBox(height: 14),
-
-                  // 4. Truthful Privacy Note (Matching verified implementation)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFF1F5F9),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: const Color(0xFFE2E8F0)),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.shield_outlined, size: 16, color: Color(0xFF1E60AA)),
-                        SizedBox(width: 8),
-                        Flexible(
-                          child: Text(
-                            'Your location. Your choice. Share only with people you trust.',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 11.5,
-                              fontWeight: FontWeight.w600,
-                              color: Color(0xFF334155),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
 
                   SizedBox(height: isSmallScreen ? 24 : 36),
 
