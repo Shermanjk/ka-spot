@@ -96,23 +96,20 @@ class _AuthScreenState extends State<AuthScreen> {
       final msg = e.message.toLowerCase();
       if (!_register && (msg.contains('invalid login credentials') || msg.contains('invalid') || msg.contains('not found'))) {
         setState(() {
-          _emailError = 'Account not found or password incorrect.';
-          _passwordError = 'Check your password or create a new account.';
+          _emailError = 'No account found with this email or password incorrect.';
+          _passwordError = 'Check your password or create an account.';
         });
         _form.currentState?.validate();
-        await _showAccountNotFoundDialog(_email.text.trim());
       } else if (_register && (msg.contains('already registered') || msg.contains('already exists'))) {
         setState(() {
           _emailError = 'An account with this email already exists.';
         });
         _form.currentState?.validate();
-        await _showAccountAlreadyRegisteredDialog(_email.text.trim());
       } else {
         setState(() {
           _emailError = e.message;
         });
         _form.currentState?.validate();
-        _message(e.message);
       }
     } catch (e) {
       if (!mounted) return;
@@ -122,137 +119,13 @@ class _AuthScreenState extends State<AuthScreen> {
         setState(() => _emailError = errorMsg);
       } else if (lower.contains('password')) {
         setState(() => _passwordError = errorMsg);
+      } else {
+        setState(() => _emailError = errorMsg);
       }
       _form.currentState?.validate();
-      _message(errorMsg);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
-  }
-
-  Future<void> _showAccountNotFoundDialog(String email) async {
-    return showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Row(
-          children: [
-            Icon(Icons.person_off_rounded, color: Color(0xFFEF4444), size: 28),
-            SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                'Account Not Found',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
-              ),
-            ),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            RichText(
-              text: TextSpan(
-                style: const TextStyle(fontSize: 14, color: Color(0xFF475569), height: 1.45),
-                children: [
-                  const TextSpan(text: 'We couldn\'t find a KaSpot account for '),
-                  TextSpan(
-                    text: email.isNotEmpty ? email : 'this email',
-                    style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
-                  ),
-                  const TextSpan(text: ', or the password was incorrect.'),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            const Text(
-              'If you haven\'t registered yet, create an account to start sharing locations with your circle.',
-              style: TextStyle(fontSize: 13, color: Color(0xFF64748B)),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Try Again'),
-          ),
-          FilledButton.icon(
-            onPressed: () {
-              Navigator.pop(ctx);
-              setState(() {
-                _register = true;
-                _emailError = null;
-                _passwordError = null;
-              });
-              _form.currentState?.reset();
-            },
-            icon: const Icon(Icons.person_add_rounded, size: 18),
-            label: const Text('Create Account'),
-            style: FilledButton.styleFrom(
-              backgroundColor: const Color(0xFF1E60AA),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _showAccountAlreadyRegisteredDialog(String email) async {
-    return showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Row(
-          children: [
-            Icon(Icons.account_circle_rounded, color: Color(0xFF1E60AA), size: 28),
-            SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                'Account Already Exists',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
-              ),
-            ),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            RichText(
-              text: TextSpan(
-                style: const TextStyle(fontSize: 14, color: Color(0xFF475569), height: 1.45),
-                children: [
-                  const TextSpan(text: 'An account is already registered for '),
-                  TextSpan(
-                    text: email.isNotEmpty ? email : 'this email',
-                    style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
-                  ),
-                  const TextSpan(text: '. Please sign in with your password.'),
-                ],
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              setState(() {
-                _register = false;
-                _emailError = null;
-                _passwordError = null;
-              });
-              _form.currentState?.reset();
-            },
-            child: const Text('Switch to Sign In'),
-          ),
-        ],
-      ),
-    );
   }
 
   Future<void> _recover() async {
