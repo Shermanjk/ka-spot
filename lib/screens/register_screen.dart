@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/kaspot_service.dart';
+import '../utils/email_validator.dart';
+import '../widgets/google_sign_in_button.dart';
 import '../widgets/kaspot_logo.dart';
 import 'sign_in_screen.dart';
 import 'verification_pending_screen.dart';
@@ -50,29 +52,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   String? _validateEmail(String? value) {
-    if (value == null || value.trim().isEmpty) {
-      return 'Enter your email address.';
-    }
-    final trimmed = value.trim();
-    if (!trimmed.contains('@')) {
-      return 'Email must include "@" (e.g. name@gmail.com).';
-    }
-    final parts = trimmed.split('@');
-    if (parts.length != 2 || parts[0].isEmpty) {
-      return 'Enter a valid username before the "@".';
-    }
-    if (!parts[1].contains('.')) {
-      return 'Enter a complete domain with extension (e.g. @gmail.com).';
-    }
-    final domainParts = parts[1].split('.');
-    if (domainParts.any((part) => part.isEmpty)) {
-      return 'Domain cannot contain empty or trailing dots.';
-    }
-    final emailRegex = RegExp(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$');
-    if (!emailRegex.hasMatch(trimmed)) {
-      return 'Please enter a valid, complete email address.';
-    }
-    return null;
+    return EmailValidator.validate(value);
   }
 
   Future<void> _submit() async {
@@ -117,6 +97,24 @@ class _RegisterScreenState extends State<RegisterScreen> {
       setState(() {
         _authError = e.toString().replaceFirst('Exception: ', '');
       });
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _signInWithGoogle() async {
+    _clearError();
+    setState(() => _busy = true);
+    try {
+      await KaSpotService.signInWithGoogle();
+      if (!mounted) return;
+      if (KaSpotService.isAuthenticated) {
+        Navigator.of(context).popUntil((route) => route.isFirst);
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _authError = e.toString().replaceFirst('Exception: ', ''));
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -167,6 +165,43 @@ class _RegisterScreenState extends State<RegisterScreen> {
                           style: TextStyle(fontSize: 14, color: Color(0xFF64748B)),
                         ),
                         const SizedBox(height: 20),
+
+                        // 1-Tap Google Sign-In Shortcut
+                        GoogleSignInButton(
+                          onPressed: _busy ? null : _signInWithGoogle,
+                          busy: _busy,
+                          label: 'Continue with Google',
+                        ),
+                        const SizedBox(height: 6),
+                        const Center(
+                          child: Text(
+                            'Instant sign-in with verified Google account',
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              color: Color(0xFF64748B),
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        const Row(
+                          children: [
+                            Expanded(child: Divider(color: Color(0xFFE2E8F0))),
+                            Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 10),
+                              child: Text(
+                                'or',
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xFF94A3B8),
+                                ),
+                              ),
+                            ),
+                            Expanded(child: Divider(color: Color(0xFFE2E8F0))),
+                          ],
+                        ),
+                        const SizedBox(height: 18),
 
                         // Calm, Single Authentication Error Banner
                         if (_authError != null) ...[

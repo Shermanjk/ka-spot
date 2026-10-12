@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'screens/home_shell.dart';
@@ -9,14 +10,17 @@ import 'services/kaspot_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  const url = String.fromEnvironment(
-    'SUPABASE_URL',
-    defaultValue: 'https://etuosispxwfmvcupjhkv.supabase.co',
-  );
-  const anonKey = String.fromEnvironment(
-    'SUPABASE_ANON_KEY',
-    defaultValue: 'sb_publishable_XY_ci6YbZ0Ms7Hk8pME4bA_v8Vzhk52',
-  );
+  try {
+    await dotenv.load(fileName: '.env');
+  } catch (_) {
+    // .env is optional when building with --dart-define or CI environments
+  }
+
+  final url = dotenv.maybeGet('SUPABASE_URL') ??
+      const String.fromEnvironment('SUPABASE_URL');
+  final anonKey = dotenv.maybeGet('SUPABASE_ANON_KEY') ??
+      const String.fromEnvironment('SUPABASE_ANON_KEY');
+
   if (url.isNotEmpty && anonKey.isNotEmpty) {
     await Supabase.initialize(url: url, publishableKey: anonKey);
     KaSpotService.configure(Supabase.instance.client);
@@ -25,7 +29,7 @@ Future<void> main() async {
   runApp(const KaSpotApp());
 }
 
-class KaSpotApp extends StatelessWidget {
+class KaSpotApp extends StatefulWidget {
   const KaSpotApp({super.key});
 
   static const ocean = Color(0xFF1E60AA);
@@ -37,6 +41,35 @@ class KaSpotApp extends StatelessWidget {
   static const mutedText = Color(0xFF64748B);
 
   @override
+  State<KaSpotApp> createState() => _KaSpotAppState();
+}
+
+class _KaSpotAppState extends State<KaSpotApp> {
+  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+
+  static const ocean = KaSpotApp.ocean;
+  static const slateBg = KaSpotApp.slateBg;
+  static const slateText = KaSpotApp.slateText;
+
+  @override
+  void initState() {
+    super.initState();
+    KaSpotService.authStateNotifier.addListener(_onAuthChanged);
+  }
+
+  @override
+  void dispose() {
+    KaSpotService.authStateNotifier.removeListener(_onAuthChanged);
+    super.dispose();
+  }
+
+  void _onAuthChanged() {
+    // Whenever authentication state changes (sign in, sign out, session restore),
+    // pop all pushed auth routes back to root so HomeShell or WelcomeScreen is cleanly displayed.
+    _navigatorKey.currentState?.popUntil((route) => route.isFirst);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final scheme = ColorScheme.fromSeed(
       seedColor: ocean,
@@ -46,6 +79,7 @@ class KaSpotApp extends StatelessWidget {
     );
 
     return MaterialApp(
+      navigatorKey: _navigatorKey,
       title: 'KaSpot',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(

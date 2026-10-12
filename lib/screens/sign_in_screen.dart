@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/kaspot_service.dart';
+import '../utils/email_validator.dart';
+import '../widgets/google_sign_in_button.dart';
 import '../widgets/kaspot_logo.dart';
 import 'forgot_password_screen.dart';
 import 'register_screen.dart';
+import 'verification_pending_screen.dart';
 
 /// Clean, professional Sign-In screen with calm error reporting and accessible navigation.
 class SignInScreen extends StatefulWidget {
@@ -22,6 +25,7 @@ class _SignInScreenState extends State<SignInScreen> {
   bool _busy = false;
   bool _obscure = true;
   String? _authError;
+  bool _isUnconfirmed = false;
 
   @override
   void initState() {
@@ -37,8 +41,11 @@ class _SignInScreenState extends State<SignInScreen> {
   }
 
   void _clearError() {
-    if (_authError != null) {
-      setState(() => _authError = null);
+    if (_authError != null || _isUnconfirmed) {
+      setState(() {
+        _authError = null;
+        _isUnconfirmed = false;
+      });
     }
   }
 
@@ -49,23 +56,48 @@ class _SignInScreenState extends State<SignInScreen> {
     setState(() => _busy = true);
     try {
       await KaSpotService.signIn(_email.text.trim(), _password.text);
-      // On success, KaSpotService.authStateNotifier updates,
-      // which automatically navigates to HomeShell via main.dart ValueListenableBuilder.
+      if (!mounted) return;
+      // Pop all pushed auth screens back to root; ValueListenableBuilder renders HomeShell
+      Navigator.of(context).popUntil((route) => route.isFirst);
     } on AuthException catch (e) {
       if (!mounted) return;
       final msg = e.message.toLowerCase();
       setState(() {
         if (msg.contains('invalid login credentials') || msg.contains('invalid') || msg.contains('not found')) {
+          _isUnconfirmed = false;
           _authError = 'Incorrect email or password. Please check your credentials or create an account.';
+        } else if (msg.contains('email not confirmed')) {
+          _isUnconfirmed = true;
+          _authError = 'Your email address has not been confirmed yet. Please verify your inbox to continue.';
         } else {
+          _isUnconfirmed = false;
           _authError = e.message;
         }
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
+        _isUnconfirmed = false;
         _authError = e.toString().replaceFirst('Exception: ', '');
       });
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _signInWithGoogle() async {
+    _clearError();
+    setState(() => _busy = true);
+    try {
+      await KaSpotService.signInWithGoogle();
+      if (!mounted) return;
+      if (KaSpotService.isAuthenticated) {
+        Navigator.of(context).popUntil((route) => route.isFirst);
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _authError = e.toString().replaceFirst('Exception: ', ''));
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -117,6 +149,32 @@ class _SignInScreenState extends State<SignInScreen> {
                         ),
                         const SizedBox(height: 20),
 
+                        // 1-Tap Google Sign-In Shortcut
+                        GoogleSignInButton(
+                          onPressed: _busy ? null : _signInWithGoogle,
+                          busy: _busy,
+                          label: 'Continue with Google',
+                        ),
+                        const SizedBox(height: 18),
+                        const Row(
+                          children: [
+                            Expanded(child: Divider(color: Color(0xFFE2E8F0))),
+                            Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 10),
+                              child: Text(
+                                'or',
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xFF94A3B8),
+                                ),
+                              ),
+                            ),
+                            Expanded(child: Divider(color: Color(0xFFE2E8F0))),
+                          ],
+                        ),
+                        const SizedBox(height: 18),
+
                         // Calm, Single Authentication Error Banner
                         if (_authError != null) ...[
                           Container(
@@ -126,26 +184,74 @@ class _SignInScreenState extends State<SignInScreen> {
                               borderRadius: BorderRadius.circular(14),
                               border: Border.all(color: const Color(0xFFFCA5A5)),
                             ),
-                            child: Row(
+                            child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                const Icon(Icons.info_outline_rounded, color: Color(0xFFDC2626), size: 18),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: Text(
-                                    _authError!,
-                                    style: const TextStyle(
-                                      fontSize: 13,
-                                      color: Color(0xFFDC2626),
-                                      fontWeight: FontWeight.w600,
-                                      height: 1.35,
+                                Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Icon(Icons.info_outline_rounded, color: Color(0xFFDC2626), size: 18),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Text(
+                                        _authError!,
+                                        style: const TextStyle(
+                                          fontSize: 13,
+                                          color: Color(0xFFDC2626),
+                                          fontWeight: FontWeight.w600,
+                                          height: 1.35,
+                                        ),
+                                      ),
+                                    ),
+                                    GestureDetector(
+                                      onTap: () => setState(() {
+                                        _authError = null;
+                                        _isUnconfirmed = false;
+                                      }),
+                                      child: const Icon(Icons.close_rounded, size: 18, color: Color(0xFF991B1B)),
+                                    ),
+                                  ],
+                                ),
+                                if (_isUnconfirmed) ...[
+                                  const SizedBox(height: 10),
+                                  InkWell(
+                                    borderRadius: BorderRadius.circular(10),
+                                    onTap: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) => VerificationPendingScreen(
+                                            email: _email.text.trim(),
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                    child: Container(
+                                      width: double.infinity,
+                                      padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 12),
+                                      decoration: BoxDecoration(
+                                        color: Colors.white,
+                                        borderRadius: BorderRadius.circular(10),
+                                        border: Border.all(color: const Color(0xFFFCA5A5)),
+                                      ),
+                                      child: const Row(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          Icon(Icons.mark_email_read_outlined, size: 16, color: Color(0xFFDC2626)),
+                                          SizedBox(width: 6),
+                                          Text(
+                                            'Verify or Resend Confirmation Link',
+                                            style: TextStyle(
+                                              fontSize: 12.5,
+                                              fontWeight: FontWeight.w700,
+                                              color: Color(0xFFDC2626),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
                                     ),
                                   ),
-                                ),
-                                GestureDetector(
-                                  onTap: () => setState(() => _authError = null),
-                                  child: const Icon(Icons.close_rounded, size: 18, color: Color(0xFF991B1B)),
-                                ),
+                                ],
                               ],
                             ),
                           ),
@@ -168,11 +274,7 @@ class _SignInScreenState extends State<SignInScreen> {
                               borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
                             ),
                           ),
-                          validator: (v) {
-                            if (v == null || v.trim().isEmpty) return 'Enter your email address.';
-                            if (!v.contains('@') || !v.contains('.')) return 'Enter a complete email address.';
-                            return null;
-                          },
+                          validator: (v) => EmailValidator.validate(v),
                         ),
                         const SizedBox(height: 14),
 

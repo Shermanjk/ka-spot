@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../utils/email_validator.dart';
 
 class AuthResult {
   final bool isSessionActive;
@@ -23,8 +24,14 @@ class KaSpotService {
   static void configure(SupabaseClient client) {
     _client = client;
     authStateNotifier.value = client.auth.currentUser != null;
-    client.auth.onAuthStateChange.listen((data) {
-      authStateNotifier.value = data.session != null;
+    client.auth.onAuthStateChange.listen((data) async {
+      final hasSession = data.session != null;
+      authStateNotifier.value = hasSession;
+      if (hasSession) {
+        try {
+          await ensureProfile();
+        } catch (_) {}
+      }
     });
   }
 
@@ -46,6 +53,11 @@ class KaSpotService {
     'arrival_alerts_enabled': false,
     'background_sharing_enabled': false,
   };
+  static final Map<String, String> _localRelationships = {};
+
+  // In-memory cache of the user's latest GPS coordinate for instant map warm-start
+  static double? lastUserLatitude;
+  static double? lastUserLongitude;
 
   static bool get isAuthenticated {
     if (_client != null) return _client!.auth.currentUser != null;
@@ -55,6 +67,73 @@ class KaSpotService {
   static String get userId {
     if (_client != null) return _client!.auth.currentUser?.id ?? '';
     return _localUser?['id'] as String? ?? '';
+  }
+
+  /// Formats any user ID into a clean, short, uppercase KaSpot Circle Code:
+  /// e.g. "KS-E7BE-D662"
+  static String formatAccountCode(String id) {
+    if (id.isEmpty) return '';
+    final clean = id.replaceAll('-', '').replaceAll(' ', '').toUpperCase();
+    if (clean.length < 8) return 'KS-$clean';
+    return 'KS-${clean.substring(0, 4)}-${clean.substring(4, 8)}';
+  }
+
+  /// Returns the current user's short, capitalized Account Code (e.g. "KS-E7BE-D662")
+  static String get accountCode => formatAccountCode(userId);
+
+  /// Resolves an entered Account Code (e.g. "KS-E7BE-D662" or "E7BED662") or raw UUID into the target User UUID
+  static Future<String> resolveUserId(String input) async {
+    final clean = input.trim().toUpperCase();
+    if (clean.isEmpty) {
+      throw Exception('Please enter an Account Code or ID.');
+    }
+
+    final uuidRegex = RegExp(r'^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$', caseSensitive: false);
+    if (uuidRegex.hasMatch(clean)) {
+      return clean.toLowerCase();
+    }
+
+    final rawHex = clean.replaceAll('KS-', '').replaceAll('-', '').replaceAll(' ', '').toLowerCase();
+
+    // Prevent matching self
+    final myHex = userId.replaceAll('-', '').toLowerCase();
+    if (rawHex.length >= 6 && myHex.startsWith(rawHex)) {
+      throw Exception('You cannot connect to yourself.');
+    }
+
+    if (_client != null) {
+      try {
+        final res = await _client!.rpc('lookup_user_by_code', params: {'code': clean});
+        if (res != null && res.toString().isNotEmpty) {
+          return res.toString();
+        }
+      } catch (_) {}
+
+      try {
+        final rows = await _client!.from('profiles').select('id');
+        for (final row in rows) {
+          final targetId = row['id'] as String;
+          final cleanTargetId = targetId.replaceAll('-', '').toLowerCase();
+          if (cleanTargetId.startsWith(rawHex)) {
+            return targetId;
+          }
+        }
+      } catch (_) {}
+    } else {
+      if (_localUser != null) {
+        final localId = _localUser!['id'] as String? ?? '';
+        final localHex = localId.replaceAll('-', '').toLowerCase();
+        if (localHex.startsWith(rawHex)) return localId;
+      }
+      for (final conn in _localConnections) {
+        final otherId = conn['other_id'] as String? ?? '';
+        final otherHex = otherId.replaceAll('-', '').toLowerCase();
+        if (otherHex.startsWith(rawHex)) return otherId;
+      }
+      return 'user-$rawHex';
+    }
+
+    throw Exception('No KaSpot member found with code "$clean". Check the code and try again.');
   }
 
   static Future<void> signIn(String email, String password) async {
@@ -83,14 +162,46 @@ class KaSpotService {
     }
   }
 
+  static Future<void> signInWithGoogle() async {
+    if (_client != null) {
+      final isMobile = !kIsWeb &&
+          (defaultTargetPlatform == TargetPlatform.android ||
+              defaultTargetPlatform == TargetPlatform.iOS);
+
+      await _client!.auth.signInWithOAuth(
+        OAuthProvider.google,
+        redirectTo: isMobile ? 'io.supabase.kaspot://login-callback' : null,
+      );
+    } else {
+      _localUser = {
+        'id': 'u-${DateTime.now().millisecondsSinceEpoch.toRadixString(16)}',
+        'email': 'googleuser@gmail.com',
+        'display_name': 'Google Member',
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+      };
+      profileNotifier.value = _localUser;
+      authStateNotifier.value = true;
+    }
+  }
+
   static Future<AuthResult> register(String name, String email, String password) async {
     final cleanEmail = email.trim().toLowerCase();
     final cleanName = name.trim();
+
+    final validationError = EmailValidator.validate(cleanEmail);
+    if (validationError != null) {
+      throw AuthException(validationError);
+    }
+
     if (_client != null) {
       final result = await _client!.auth.signUp(
         email: cleanEmail,
         password: password,
-        data: {'display_name': cleanName},
+        data: {
+          'display_name': cleanName,
+          'full_name': cleanName,
+          'name': cleanName,
+        },
       );
       if (result.session != null) {
         await ensureProfile(name: cleanName);
@@ -156,14 +267,18 @@ class KaSpotService {
     if (_client == null) return;
     final user = _client!.auth.currentUser;
     if (user == null) return;
-    final displayName = name ??
-        (user.userMetadata?['display_name'] as String?) ??
-        user.email?.split('@').first ??
-        'KaSpot member';
+    final metaName = (user.userMetadata?['display_name'] as String?) ??
+        (user.userMetadata?['full_name'] as String?) ??
+        (user.userMetadata?['name'] as String?);
+    final emailPrefix = user.email?.split('@').first;
+    final candidate = name?.trim() ?? metaName?.trim() ?? emailPrefix?.trim();
+    final displayName = (candidate != null && candidate.isNotEmpty)
+        ? candidate
+        : 'KaSpot Member';
     await _client!.from('profiles').upsert({
       'id': user.id,
       'display_name': displayName,
-    }, onConflict: 'id', ignoreDuplicates: true);
+    }, onConflict: 'id');
     profileNotifier.value = await myProfile();
   }
 
@@ -191,11 +306,11 @@ class KaSpotService {
 
   static Future<void> updateMyAvatar(String? avatarUrl) async {
     if (_client != null) {
-      await _client!.from('profiles').upsert({
-        'id': userId,
+      await ensureProfile();
+      await _client!.from('profiles').update({
         'avatar_url': avatarUrl,
         'updated_at': DateTime.now().toUtc().toIso8601String(),
-      }, onConflict: 'id');
+      }).eq('id', userId);
     } else if (_localUser != null) {
       _localUser!['avatar_url'] = avatarUrl;
     }
@@ -212,24 +327,62 @@ class KaSpotService {
     return List<Map<String, dynamic>>.from(_localRequests);
   }
 
-  static Future<void> sendRequest(String recipientId) async {
-    final cleanId = recipientId.trim();
-    if (cleanId == userId) throw Exception('You cannot connect to yourself.');
+  static Future<Map<String, String>> circleRelationships() async {
+    if (_client != null) {
+      try {
+        final rows = await _client!.from('circle_relationships')
+            .select('target_user_id, relationship')
+            .eq('user_id', userId);
+        return {
+          for (final r in rows)
+            r['target_user_id'] as String: r['relationship'] as String,
+        };
+      } catch (_) {
+        return Map<String, String>.from(_localRelationships);
+      }
+    }
+    return Map<String, String>.from(_localRelationships);
+  }
+
+  static Future<void> setCircleRelationship(String targetUserId, String relationship) async {
+    final valid = {'Partner', 'Family', 'Friend'}.contains(relationship)
+        ? relationship
+        : 'Friend';
+    if (_client != null) {
+      try {
+        await _client!.from('circle_relationships').upsert({
+          'user_id': userId,
+          'target_user_id': targetUserId,
+          'relationship': valid,
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        }, onConflict: 'user_id,target_user_id');
+      } catch (_) {}
+    }
+    _localRelationships[targetUserId] = valid;
+  }
+
+  static Future<void> sendRequest(String recipientInput, {String relationship = 'Friend'}) async {
+    final cleanInput = recipientInput.trim();
+    if (cleanInput.isEmpty) throw Exception('Please enter an account code or ID.');
+
+    final targetId = await resolveUserId(cleanInput);
+    if (targetId == userId) throw Exception('You cannot connect to yourself.');
 
     if (_client != null) {
       await _client!.from('connection_requests').insert({
         'requester_id': userId,
-        'recipient_id': cleanId,
+        'recipient_id': targetId,
       });
     } else {
       _localRequests.insert(0, {
         'id': 'req-${DateTime.now().millisecondsSinceEpoch}',
         'requester_id': userId,
-        'recipient_id': cleanId,
+        'recipient_id': targetId,
         'status': 'pending',
         'created_at': DateTime.now().toUtc().toIso8601String(),
       });
     }
+    await setCircleRelationship(targetId, relationship);
   }
 
   static Future<void> respondToRequest(String requestId, String status) async {
@@ -254,6 +407,7 @@ class KaSpotService {
   }
 
   static Future<List<Map<String, dynamic>>> connections() async {
+    final rels = await circleRelationships();
     if (_client != null) {
       final rows = await _client!.from('connections').select().or(
             'user_a_id.eq.$userId,user_b_id.eq.$userId',
@@ -270,10 +424,15 @@ class KaSpotService {
           ...Map<String, dynamic>.from(row),
           'other_id': otherId,
           'display_name': byId[otherId]?['display_name'] ?? 'KaSpot member',
+          'avatar_url': byId[otherId]?['avatar_url'] as String?,
+          'relationship': rels[otherId] ?? 'Friend',
         };
       }).toList();
     }
-    return List<Map<String, dynamic>>.from(_localConnections);
+    return _localConnections.map((c) => {
+      ...c,
+      'relationship': rels[c['other_id']] ?? (c['relationship'] as String? ?? 'Friend'),
+    }).toList();
   }
 
   static Future<void> removeConnection(String connectionId) async {
@@ -319,17 +478,28 @@ class KaSpotService {
 
   static Future<void> setSharingForAll(bool enabled) async {
     if (_client != null) {
-      final grants = await sharingGrants();
-      for (final grant in grants) {
-        await _client!.from('location_sharing').update({
+      final conns = await connections();
+      for (final c in conns) {
+        final otherId = c['other_id'] as String;
+        await _client!.from('location_sharing').upsert({
+          'owner_id': userId,
+          'recipient_id': otherId,
           'is_enabled': enabled,
           'updated_at': DateTime.now().toUtc().toIso8601String(),
-        }).eq('id', grant['id']);
+        }, onConflict: 'owner_id,recipient_id');
       }
-      if (!enabled || grants.isEmpty) await _removeLocationIfNoActiveGrants();
+      if (!enabled) await _removeLocationIfNoActiveGrants();
     } else {
-      for (final key in _localSharingGrants.keys) {
-        _localSharingGrants[key] = enabled;
+      if (_localSharingGrants.isEmpty && _localConnections.isNotEmpty) {
+        for (final c in _localConnections) {
+          _localSharingGrants[c['other_id'] as String] = enabled;
+        }
+      } else if (_localSharingGrants.isEmpty) {
+        _localSharingGrants['default'] = enabled;
+      } else {
+        for (final key in _localSharingGrants.keys) {
+          _localSharingGrants[key] = enabled;
+        }
       }
     }
   }
@@ -343,6 +513,8 @@ class KaSpotService {
   }
 
   static Future<void> upsertOwnLocation(Position position) async {
+    lastUserLatitude = position.latitude;
+    lastUserLongitude = position.longitude;
     if (!await anySharingEnabled()) return;
     if (_client != null) {
       await _client!.from('locations').upsert({
@@ -361,6 +533,7 @@ class KaSpotService {
   }
 
   static Future<List<Map<String, dynamic>>> sharedLocations() async {
+    final rels = await circleRelationships();
     if (_client != null) {
       final grants = await _client!.from('location_sharing')
           .select('owner_id').eq('recipient_id', userId).eq('is_enabled', true);
@@ -370,11 +543,13 @@ class KaSpotService {
       final profiles = await _client!.from('profiles').select('id,display_name,avatar_url').inFilter('id', ids);
       final profileMap = {for (final profile in profiles) profile['id'] as String: profile};
       return locations.map((row) {
-        final profile = profileMap[row['user_id']];
+        final otherId = row['user_id'] as String;
+        final profile = profileMap[otherId];
         return {
           ...Map<String, dynamic>.from(row),
           'display_name': profile?['display_name'] ?? 'KaSpot member',
           'avatar_url': profile?['avatar_url'] as String?,
+          'relationship': rels[otherId] ?? 'Friend',
         };
       }).toList();
     }
@@ -442,6 +617,65 @@ class KaSpotService {
       }, onConflict: 'user_id');
     } else {
       _localPrefs[field] = value;
+    }
+  }
+
+  // In-Circle Chat Messaging
+  static final List<Map<String, dynamic>> _localMessages = [];
+
+  static Future<List<Map<String, dynamic>>> getCircleMessages(String otherUserId) async {
+    if (_client != null) {
+      try {
+        final rows = await _client!.from('circle_messages').select().or(
+          'and(sender_id.eq.$userId,recipient_id.eq.$otherUserId),and(sender_id.eq.$otherUserId,recipient_id.eq.$userId)',
+        ).order('created_at', ascending: true);
+        return rows.map((r) => Map<String, dynamic>.from(r)).toList();
+      } catch (_) {
+        return _localMessages
+            .where((m) =>
+                (m['sender_id'] == userId && m['recipient_id'] == otherUserId) ||
+                (m['sender_id'] == otherUserId && m['recipient_id'] == userId))
+            .toList();
+      }
+    }
+    return _localMessages
+        .where((m) =>
+            (m['sender_id'] == userId && m['recipient_id'] == otherUserId) ||
+            (m['sender_id'] == otherUserId && m['recipient_id'] == userId))
+        .toList();
+  }
+
+  static Future<void> sendCircleMessage(String recipientId, String content) async {
+    final cleanContent = content.trim();
+    if (cleanContent.isEmpty) throw Exception('Message cannot be empty.');
+    if (recipientId == userId) throw Exception('You cannot message yourself.');
+
+    if (_client != null) {
+      try {
+        await _client!.from('circle_messages').insert({
+          'sender_id': userId,
+          'recipient_id': recipientId,
+          'content': cleanContent,
+        });
+        return;
+      } catch (_) {
+        _localMessages.add({
+          'id': 'msg-${DateTime.now().millisecondsSinceEpoch}',
+          'sender_id': userId,
+          'recipient_id': recipientId,
+          'content': cleanContent,
+          'created_at': DateTime.now().toUtc().toIso8601String(),
+        });
+        return;
+      }
+    } else {
+      _localMessages.add({
+        'id': 'msg-${DateTime.now().millisecondsSinceEpoch}',
+        'sender_id': userId,
+        'recipient_id': recipientId,
+        'content': cleanContent,
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+      });
     }
   }
 }

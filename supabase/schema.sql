@@ -6,7 +6,7 @@ create extension if not exists pgcrypto with schema extensions;
 
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
-  display_name text not null check (char_length(display_name) between 1 and 80),
+  display_name text not null default 'KaSpot Member' check (char_length(display_name) between 1 and 80),
   avatar_url text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -33,6 +33,14 @@ create table if not exists public.connections (
   created_at timestamptz not null default now(),
   check (user_a_id < user_b_id),
   unique (user_a_id, user_b_id)
+);
+
+create table if not exists public.circle_relationships (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  target_user_id uuid not null references auth.users(id) on delete cascade,
+  relationship text not null default 'Friend' check (relationship in ('Partner', 'Family', 'Friend')),
+  updated_at timestamptz not null default now(),
+  primary key (user_id, target_user_id)
 );
 
 create table if not exists public.location_sharing (
@@ -222,20 +230,60 @@ create policy saved_places_owner_all on public.saved_places for all to authentic
 using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
 create policy notification_preferences_owner_all on public.notification_preferences for all to authenticated
 using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
+alter table public.circle_relationships enable row level security;
+create policy circle_relationships_owner on public.circle_relationships for all to authenticated
+using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
 
 -- Make the Data API role grants explicit; RLS remains the row/relationship boundary.
 revoke all on public.profiles, public.connection_requests, public.connections,
-  public.location_sharing, public.locations, public.saved_places,
-  public.notification_preferences from anon;
+  public.circle_relationships, public.location_sharing, public.locations,
+  public.saved_places, public.notification_preferences from anon;
 grant select, insert, update on public.profiles to authenticated;
 grant select, insert, update on public.connection_requests to authenticated;
 grant select, delete on public.connections to authenticated;
+grant select, insert, update, delete on public.circle_relationships to authenticated;
 grant select, insert, update, delete on public.location_sharing to authenticated;
 grant select, insert, update, delete on public.locations to authenticated;
 grant select, insert, update, delete on public.saved_places to authenticated;
 grant select, insert, update, delete on public.notification_preferences to authenticated;
 
--- Add public.locations and public.location_sharing to the supabase_realtime
+-- In-Circle Chat Messaging between accepted circle members
+create table if not exists public.circle_messages (
+  id uuid primary key default gen_random_uuid(),
+  sender_id uuid not null references auth.users(id) on delete cascade,
+  recipient_id uuid not null references auth.users(id) on delete cascade,
+  content text not null check (char_length(trim(content)) between 1 and 500),
+  created_at timestamptz not null default now()
+);
+
+alter table public.circle_messages enable row level security;
+
+create policy circle_messages_participant_read on public.circle_messages for select to authenticated
+using (
+  (sender_id = (select auth.uid()) or recipient_id = (select auth.uid()))
+  and public.is_accepted_connection(sender_id, recipient_id)
+);
+
+create policy circle_messages_sender_create on public.circle_messages for insert to authenticated
+with check (
+  sender_id = (select auth.uid())
+  and public.is_accepted_connection(sender_id, recipient_id)
+  and sender_id <> recipient_id
+);
+
+grant select, insert on public.circle_messages to authenticated;
+
+-- Lookup user ID by short uppercase circle code (e.g. KS-E7BE-D662 or E7BED662)
+create or replace function public.lookup_user_by_code(code text)
+returns uuid language sql stable security definer set search_path = '' as $$
+  select id from public.profiles
+  where replace(replace(upper(trim(code)), 'KS-', ''), '-', '') = substring(replace(id::text, '-', '') from 1 for 8)
+  limit 1;
+$$;
+revoke all on function public.lookup_user_by_code(text) from public;
+grant execute on function public.lookup_user_by_code(text) to authenticated;
+
+-- Add public.locations, public.location_sharing, and public.circle_messages to the supabase_realtime
 -- publication in the dashboard only after reviewing RLS and Realtime settings.
 -- A database trigger below removes public.locations when the owner's final
 -- enabled sharing grant is disabled or deleted.
@@ -275,13 +323,22 @@ commit;
 begin;
 create or replace function public.handle_new_user()
 returns trigger language plpgsql security definer set search_path = '' as $$
+declare
+  candidate_name text;
 begin
+  candidate_name := coalesce(
+    nullif(trim(new.raw_user_meta_data->>'display_name'), ''),
+    nullif(trim(new.raw_user_meta_data->>'full_name'), ''),
+    nullif(trim(new.raw_user_meta_data->>'name'), ''),
+    nullif(split_part(new.email, '@', 1), ''),
+    'KaSpot Member'
+  );
+
   insert into public.profiles (id, display_name)
-  values (
-    new.id,
-    coalesce(nullif(new.raw_user_meta_data->>'display_name', ''), split_part(new.email, '@', 1), 'KaSpot Member')
-  )
-  on conflict (id) do nothing;
+  values (new.id, candidate_name)
+  on conflict (id) do update
+    set display_name = excluded.display_name
+    where public.profiles.display_name is null or trim(public.profiles.display_name) = '';
 
   insert into public.notification_preferences (user_id)
   values (new.id)

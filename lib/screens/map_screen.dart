@@ -6,6 +6,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/background_location_service.dart';
+import '../services/in_app_notification_service.dart';
 import '../services/kaspot_service.dart';
 import '../widgets/kaspot_avatar.dart';
 import '../widgets/kaspot_logo.dart';
@@ -18,8 +19,9 @@ class MapScreen extends StatefulWidget {
   State<MapScreen> createState() => _MapScreenState();
 }
 
-class _MapScreenState extends State<MapScreen> {
+class _MapScreenState extends State<MapScreen> with SingleTickerProviderStateMixin {
   final _map = MapController();
+  late final AnimationController _syncAnimController;
   LatLng? _myPoint;
   List<Map<String, dynamic>> _shared = [];
   bool _busy = false;
@@ -32,9 +34,71 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void initState() {
     super.initState();
+    _syncAnimController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 700),
+    );
     KaSpotService.profileNotifier.addListener(_onProfileUpdated);
+    if (KaSpotService.lastUserLatitude != null && KaSpotService.lastUserLongitude != null) {
+      _myPoint = LatLng(KaSpotService.lastUserLatitude!, KaSpotService.lastUserLongitude!);
+    }
     _refresh();
     _subscribe();
+    _initAutoLocate();
+  }
+
+  Future<void> _initAutoLocate() async {
+    // 1. Instant zero-latency warm-start: If OS has cached last known position, center immediately
+    try {
+      final last = await Geolocator.getLastKnownPosition();
+      if (last != null && mounted) {
+        final point = LatLng(last.latitude, last.longitude);
+        KaSpotService.lastUserLatitude = last.latitude;
+        KaSpotService.lastUserLongitude = last.longitude;
+        setState(() => _myPoint = point);
+        _map.move(point, 16.0);
+      }
+    } catch (_) {}
+
+    // 2. High-precision live GPS lock
+    await _autoLocate();
+  }
+
+  Future<void> _autoLocate() async {
+    try {
+      final enabled = await Geolocator.isLocationServiceEnabled();
+      if (!enabled) return;
+
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+        return;
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 12),
+        ),
+      );
+
+      final point = LatLng(position.latitude, position.longitude);
+      KaSpotService.lastUserLatitude = position.latitude;
+      KaSpotService.lastUserLongitude = position.longitude;
+
+      if (_sharing) {
+        await KaSpotService.upsertOwnLocation(position);
+      }
+
+      if (mounted) {
+        setState(() => _myPoint = point);
+        _map.move(point, 16.0);
+      }
+    } catch (_) {
+      // Quiet fail: Do not disrupt UI on background auto-locate failure
+    }
   }
 
   void _onProfileUpdated() {
@@ -77,6 +141,8 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   void dispose() {
+    _syncAnimController.stop();
+    _syncAnimController.dispose();
     KaSpotService.profileNotifier.removeListener(_onProfileUpdated);
     final channel = _channel;
     if (channel != null && KaSpotService.isConfigured) {
@@ -89,6 +155,9 @@ class _MapScreenState extends State<MapScreen> {
   Future<void> _refresh() async {
     if (_refreshing) return;
     _refreshing = true;
+    if (mounted) {
+      unawaited(_syncAnimController.repeat());
+    }
     try {
       final values = await Future.wait([
         KaSpotService.anySharingEnabled(),
@@ -98,19 +167,93 @@ class _MapScreenState extends State<MapScreen> {
       if (mounted) {
         final profile = values[2] as Map<String, dynamic>?;
         final name = profile?['display_name'] as String?;
+        final newShared = values[1] as List<Map<String, dynamic>>;
         setState(() {
           _sharing = values[0] as bool;
-          _shared = values[1] as List<Map<String, dynamic>>;
+          _shared = newShared;
           if (name != null && name.trim().isNotEmpty) {
             _myName = name.trim().split(' ').first;
           }
           _myAvatarUrl = profile?['avatar_url'] as String?;
         });
+
+        // Trigger in-app arrival detection
+        _checkArrivals(newShared);
       }
     } catch (_) {
     } finally {
-      _refreshing = false;
+      if (mounted) {
+        _syncAnimController.stop();
+        _syncAnimController.reset();
+        setState(() => _refreshing = false);
+      } else {
+        _refreshing = false;
+      }
     }
+  }
+
+  Future<void> _checkArrivals(List<Map<String, dynamic>> sharedMembers) async {
+    try {
+      final prefs = await KaSpotService.notificationPreferences();
+      final arrivalEnabled = prefs['arrival_alerts_enabled'] as bool? ?? false;
+      if (!arrivalEnabled) return;
+
+      final places = await KaSpotService.savedPlaces();
+      InAppNotificationService.checkMemberArrivals(
+        sharedMembers: sharedMembers,
+        savedPlaces: places,
+        arrivalAlertsEnabled: arrivalEnabled,
+        onArrivalTap: (member, place) {
+          final lat = (member['latitude'] as num?)?.toDouble();
+          final lon = (member['longitude'] as num?)?.toDouble();
+          if (lat != null && lon != null) {
+            _map.move(LatLng(lat, lon), 16.0);
+          }
+        },
+      );
+    } catch (_) {}
+  }
+
+  Widget _relationshipPill(String rel) {
+    Color bg;
+    Color text;
+    IconData icon;
+    switch (rel) {
+      case 'Partner':
+        bg = const Color(0xFFFFE4E6);
+        text = const Color(0xFFE11D48);
+        icon = Icons.favorite_rounded;
+        break;
+      case 'Family':
+        bg = const Color(0xFFF3E8FF);
+        text = const Color(0xFF7C3AED);
+        icon = Icons.family_restroom_rounded;
+        break;
+      case 'Friend':
+      default:
+        bg = const Color(0xFFE0F2FE);
+        text = const Color(0xFF0284C7);
+        icon = Icons.people_alt_rounded;
+        break;
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 10, color: text),
+          const SizedBox(width: 3),
+          Text(
+            rel,
+            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: text),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<Position> _getPosition() async {
@@ -140,6 +283,8 @@ class _MapScreenState extends State<MapScreen> {
     try {
       final position = await _getPosition();
       final point = LatLng(position.latitude, position.longitude);
+      KaSpotService.lastUserLatitude = position.latitude;
+      KaSpotService.lastUserLongitude = position.longitude;
 
       if (_sharing) {
         await KaSpotService.upsertOwnLocation(position);
@@ -167,11 +312,11 @@ class _MapScreenState extends State<MapScreen> {
   Future<void> _toggleSharing(bool enabled) async {
     setState(() => _busy = true);
     try {
-      final grants = await KaSpotService.sharingGrants();
-      if (enabled && grants.isEmpty) {
+      final conns = await KaSpotService.connections();
+      if (enabled && conns.isEmpty) {
         if (mounted) {
           setState(() => _sharing = false);
-          _notify('Connect with someone in the Circle tab to start sharing.');
+          _notify('No Circle members yet. Add someone in the Circle tab to share your location.');
         }
         return;
       }
@@ -179,11 +324,20 @@ class _MapScreenState extends State<MapScreen> {
       await KaSpotService.setSharingForAll(enabled);
       if (enabled && position != null) {
         await KaSpotService.upsertOwnLocation(position);
-        if (mounted) setState(() => _myPoint = LatLng(position.latitude, position.longitude));
+        if (mounted) {
+          setState(() {
+            _myPoint = LatLng(position.latitude, position.longitude);
+            _sharing = true;
+          });
+        }
+      } else {
+        if (mounted) setState(() => _sharing = enabled);
       }
+
       if (mounted) {
-        setState(() => _sharing = enabled);
-        _notify(enabled ? 'Sharing is on for your circle.' : 'Sharing paused for everyone.');
+        _notify(enabled
+            ? 'Live location sharing is on for your circle.'
+            : 'Location sharing paused. Your position is hidden.');
       }
       await _refresh();
     } catch (e) {
@@ -359,11 +513,13 @@ class _MapScreenState extends State<MapScreen> {
     final markers = <Marker>[
       if (_myPoint != null)
         Marker(
+          key: ValueKey('user-beacon-${_myAvatarUrl?.hashCode}-$_sharing'),
           point: _myPoint!,
           width: 96,
           height: 96,
           alignment: Alignment.center,
           child: _PulsingLocationBeacon(
+            key: ValueKey('pulsing-beacon-$_myName-${_myAvatarUrl?.hashCode}-$_sharing'),
             name: _myName,
             avatarUrl: _myAvatarUrl,
             isSharing: _sharing,
@@ -401,9 +557,12 @@ class _MapScreenState extends State<MapScreen> {
           // 1. Full-screen clean Map
           FlutterMap(
             mapController: _map,
-            options: const MapOptions(
-              initialCenter: LatLng(14.5995, 120.9842),
-              initialZoom: 13.0,
+            options: MapOptions(
+              initialCenter: _myPoint ??
+                  (KaSpotService.lastUserLatitude != null && KaSpotService.lastUserLongitude != null
+                      ? LatLng(KaSpotService.lastUserLatitude!, KaSpotService.lastUserLongitude!)
+                      : const LatLng(14.5995, 120.9842)),
+              initialZoom: _myPoint != null || KaSpotService.lastUserLatitude != null ? 16.0 : 13.0,
               minZoom: 2,
               maxZoom: 18,
             ),
@@ -446,69 +605,118 @@ class _MapScreenState extends State<MapScreen> {
                       const KaSpotWordmark(fontSize: 21),
                       const Spacer(),
 
-                      // Integrated Sharing & Background Status Badge
+                      // Option A: Unified Modern Control Capsule
                       ValueListenableBuilder<bool>(
                         valueListenable: BackgroundLocationService.isBackgroundSharingEnabled,
                         builder: (context, bgActive, _) {
-                          final statusColor = !_sharing
-                              ? const Color(0xFF94A3B8)
-                              : (bgActive ? const Color(0xFF10B981) : const Color(0xFF2563EB));
-                          final bgColor = !_sharing
-                              ? const Color(0xFFF1F5F9)
-                              : (bgActive ? const Color(0xFFECFDF5) : const Color(0xFFEFF6FF));
-                          final borderColor = !_sharing
-                              ? const Color(0xFFCBD5E1)
-                              : (bgActive ? const Color(0xFFA7F3D0) : const Color(0xFFBFDBFE));
-                          final statusText = !_sharing
-                              ? 'Sharing Paused'
-                              : (bgActive ? 'Live · Background' : 'Sharing (Open App)');
+                          final isLive = _sharing;
+                          final dotColor = isLive
+                              ? const Color(0xFF10B981)
+                              : const Color(0xFF94A3B8);
+                          final statusText = isLive
+                              ? (bgActive ? 'Live · Bg' : 'Live')
+                              : 'Paused';
+                          final textColor = isLive
+                              ? const Color(0xFF065F46)
+                              : const Color(0xFF475569);
+                          final capsuleBg = isLive
+                              ? const Color(0xFFECFDF5)
+                              : const Color(0xFFF8FAFC);
+                          final capsuleBorder = isLive
+                              ? const Color(0xFFA7F3D0)
+                              : const Color(0xFFCBD5E1);
 
-                          return GestureDetector(
-                            onTap: _showSharingOptionsSheet,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                              decoration: BoxDecoration(
-                                color: bgColor,
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(color: borderColor),
-                              ),
+                          return Container(
+                            decoration: BoxDecoration(
+                              color: capsuleBg,
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(color: capsuleBorder, width: 1.2),
+                              boxShadow: const [
+                                BoxShadow(
+                                  color: Color(0x06000000),
+                                  blurRadius: 4,
+                                  offset: Offset(0, 1),
+                                ),
+                              ],
+                            ),
+                            child: Material(
+                              color: Colors.transparent,
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
+                                  // Status trigger (1-tap toggle or long-press options)
+                                  InkWell(
+                                    borderRadius: const BorderRadius.horizontal(left: Radius.circular(20)),
+                                    onTap: _busy ? null : () => _toggleSharing(!_sharing),
+                                    onLongPress: _showSharingOptionsSheet,
+                                    child: Padding(
+                                      padding: const EdgeInsets.fromLTRB(10, 6, 8, 6),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Container(
+                                            width: 8,
+                                            height: 8,
+                                            decoration: BoxDecoration(
+                                              shape: BoxShape.circle,
+                                              color: dotColor,
+                                              boxShadow: isLive
+                                                  ? [
+                                                      BoxShadow(
+                                                        color: dotColor.withValues(alpha: 0.45),
+                                                        blurRadius: 5,
+                                                        spreadRadius: 1,
+                                                      ),
+                                                    ]
+                                                  : null,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 6),
+                                          Text(
+                                            statusText,
+                                            style: TextStyle(
+                                              fontSize: 12.5,
+                                              fontWeight: FontWeight.w800,
+                                              color: textColor,
+                                              letterSpacing: 0.1,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+
+                                  // Subtle vertical hairline divider inside capsule
                                   Container(
-                                    width: 8,
-                                    height: 8,
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      color: statusColor,
+                                    width: 1,
+                                    height: 16,
+                                    color: isLive ? const Color(0xFFA7F3D0) : const Color(0xFFE2E8F0),
+                                  ),
+
+                                  // Animated sync button
+                                  Tooltip(
+                                    message: 'Sync location data',
+                                    child: InkWell(
+                                      borderRadius: const BorderRadius.horizontal(right: Radius.circular(20)),
+                                      onTap: _busy || _refreshing ? null : _refresh,
+                                      child: Padding(
+                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                        child: RotationTransition(
+                                          turns: _syncAnimController,
+                                          child: Icon(
+                                            Icons.sync_rounded,
+                                            size: 17,
+                                            color: isLive ? const Color(0xFF059669) : const Color(0xFF64748B),
+                                          ),
+                                        ),
+                                      ),
                                     ),
                                   ),
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    statusText,
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w700,
-                                      color: !_sharing
-                                          ? const Color(0xFF475569)
-                                          : (bgActive ? const Color(0xFF065F46) : const Color(0xFF1E40AF)),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Icon(Icons.expand_more_rounded, size: 16, color: statusColor),
                                 ],
                               ),
                             ),
                           );
                         },
-                      ),
-
-                      const SizedBox(width: 4),
-                      IconButton(
-                        icon: const Icon(Icons.refresh_rounded, size: 21, color: Color(0xFF64748B)),
-                        tooltip: 'Refresh locations',
-                        onPressed: _busy ? null : _refresh,
-                        visualDensity: VisualDensity.compact,
                       ),
                     ],
                   ),
@@ -585,13 +793,22 @@ class _MapScreenState extends State<MapScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        name,
-                        style: const TextStyle(
-                          fontSize: 19,
-                          fontWeight: FontWeight.w800,
-                          color: Color(0xFF0F172A),
-                        ),
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              name,
+                              style: const TextStyle(
+                                fontSize: 19,
+                                fontWeight: FontWeight.w800,
+                                color: Color(0xFF0F172A),
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          _relationshipPill(item['relationship'] as String? ?? 'Friend'),
+                        ],
                       ),
                       const SizedBox(height: 3),
                       Row(
@@ -691,6 +908,7 @@ class _MapScreenState extends State<MapScreen> {
 /// Perfectly centered on the exact GPS coordinate at all zoom levels (0 pixel drift).
 class _PulsingLocationBeacon extends StatefulWidget {
   const _PulsingLocationBeacon({
+    super.key,
     required this.name,
     this.avatarUrl,
     this.isSharing = false,
@@ -785,6 +1003,7 @@ class _PulsingLocationBeaconState extends State<_PulsingLocationBeacon>
                   width: 44,
                   height: 44,
                   decoration: const BoxDecoration(
+                    color: Colors.white,
                     shape: BoxShape.circle,
                     boxShadow: [
                       BoxShadow(
@@ -795,6 +1014,7 @@ class _PulsingLocationBeaconState extends State<_PulsingLocationBeacon>
                     ],
                   ),
                   child: KaSpotAvatar(
+                    key: ValueKey('beacon-avatar-${widget.avatarUrl?.hashCode}'),
                     name: displayName,
                     avatarUrl: widget.avatarUrl,
                     size: 44,

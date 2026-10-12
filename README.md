@@ -86,12 +86,18 @@ flutter analyze
 ```
 
 ### 3. Run the application
-To run in local demo mode (no backend required):
-```sh
-flutter run
-```
+To connect your Supabase project (recommended):
+1. Copy the template:
+   ```sh
+   cp .env.example .env
+   ```
+2. Fill in your `SUPABASE_URL` and `SUPABASE_ANON_KEY` in `.env`.
+3. Run the app:
+   ```sh
+   flutter run
+   ```
 
-To connect to your own Supabase project:
+Alternatively, you can provide environment variables via CLI flags:
 ```sh
 flutter run \
   --dart-define=SUPABASE_URL=https://YOUR_PROJECT.supabase.co \

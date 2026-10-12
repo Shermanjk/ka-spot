@@ -506,22 +506,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           ),
                         ],
                       ),
-                      const SizedBox(height: 4),
-                      Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFECFDF5),
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: const Text(
-                              'Consent Shield Active',
-                              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFF059669)),
-                            ),
-                          ),
-                        ],
-                      ),
                     ],
                   ),
                 ),
@@ -549,12 +533,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text(
-                          'Your KaSpot Account ID',
+                          'Your KaSpot Circle Code',
                           style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFF64748B)),
                         ),
                         Text(
-                          id,
-                          style: const TextStyle(fontSize: 13, fontFamily: 'monospace', fontWeight: FontWeight.w600, color: Color(0xFF0F172A)),
+                          KaSpotService.accountCode,
+                          style: const TextStyle(fontSize: 15, fontFamily: 'monospace', fontWeight: FontWeight.w800, letterSpacing: 0.5, color: Color(0xFF0F172A)),
                           overflow: TextOverflow.ellipsis,
                         ),
                       ],
@@ -562,8 +546,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                   TextButton.icon(
                     onPressed: () {
-                      Clipboard.setData(ClipboardData(text: id));
-                      _notify('Account ID copied to clipboard.');
+                      final code = KaSpotService.accountCode;
+                      Clipboard.setData(ClipboardData(text: code));
+                      _notify('Circle Code $code copied to clipboard.');
                     },
                     icon: const Icon(Icons.copy_rounded, size: 16),
                     label: const Text('Copy'),
@@ -597,16 +582,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 context,
                 MaterialPageRoute(builder: (_) => const NotificationsScreen()),
               ),
-            ),
-            _SettingsTile(
-              icon: Icons.history_toggle_off_rounded,
-              iconColor: const Color(0xFF10B981),
-              title: 'Zero Movement Trail',
-              subtitle: 'KaSpot stores only 1 latest point, never a history',
-              trailing: const Icon(Icons.check_circle_rounded, color: Color(0xFF10B981), size: 20),
-              onTap: () {
-                _notify('KaSpot is built with strict single-coordinate retention.');
-              },
             ),
           ]),
 
@@ -689,19 +664,65 @@ class PrivacyScreen extends StatefulWidget {
 }
 
 class _PrivacyScreenState extends State<PrivacyScreen> {
+  bool _isPaused = false;
+  bool _loading = true;
   bool _busy = false;
 
-  Future<void> _pauseAll() async {
-    setState(() => _busy = true);
+  @override
+  void initState() {
+    super.initState();
+    _loadSharingStatus();
+  }
+
+  Future<void> _loadSharingStatus() async {
     try {
-      await KaSpotService.setSharingForAll(false);
+      final active = await KaSpotService.anySharingEnabled();
       if (mounted) {
+        setState(() {
+          _isPaused = !active;
+          _loading = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _togglePause(bool shouldPause) async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _isPaused = shouldPause;
+    });
+
+    try {
+      // shouldPause == true -> pause all sharing (set is_enabled to false)
+      // shouldPause == false -> resume circle sharing (set is_enabled to true)
+      await KaSpotService.setSharingForAll(!shouldPause);
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Sharing has been paused for all connections.')),
+          SnackBar(
+            content: Text(
+              shouldPause
+                  ? 'All location sharing paused. Your position is hidden from all members.'
+                  : 'Location sharing resumed for your authorized circle.',
+            ),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
         );
       }
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
+      if (mounted) {
+        setState(() => _isPaused = !shouldPause); // rollback on error
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to update sharing: $e'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -800,15 +821,36 @@ class _PrivacyScreenState extends State<PrivacyScreen> {
               },
             ),
             const Divider(height: 1, indent: 16, endIndent: 16),
-            _SettingsTile(
-              icon: Icons.pause_circle_outline_rounded,
-              iconColor: const Color(0xFFD97706),
-              title: 'Pause Sharing for Everyone',
-              subtitle: 'Instantly stops updates and deletes your live row',
-              onTap: _busy ? null : _pauseAll,
-              trailing: _busy
-                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(Icons.chevron_right_rounded, color: Color(0xFF94A3B8)),
+            SwitchListTile.adaptive(
+              value: _isPaused,
+              onChanged: (_loading || _busy) ? null : _togglePause,
+              secondary: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: (_isPaused ? const Color(0xFFD97706) : const Color(0xFF1E60AA)).withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(
+                  _isPaused ? Icons.pause_circle_rounded : Icons.share_location_rounded,
+                  color: _isPaused ? const Color(0xFFD97706) : const Color(0xFF1E60AA),
+                  size: 20,
+                ),
+              ),
+              title: const Text(
+                'Pause Sharing for Everyone',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14, color: Color(0xFF0F172A)),
+              ),
+              subtitle: Text(
+                _isPaused
+                    ? 'Paused · Your location is completely hidden from all members'
+                    : 'Active · Location sharing is enabled for your circle',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: _isPaused ? const Color(0xFFD97706) : const Color(0xFF64748B),
+                  fontWeight: _isPaused ? FontWeight.w600 : FontWeight.normal,
+                ),
+              ),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             ),
           ]),
           const SizedBox(height: 16),
@@ -929,7 +971,6 @@ class _SettingsTile extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.onTap,
-    this.trailing,
     this.titleColor,
   });
 
@@ -938,7 +979,6 @@ class _SettingsTile extends StatelessWidget {
   final String title;
   final String subtitle;
   final VoidCallback? onTap;
-  final Widget? trailing;
   final Color? titleColor;
 
   @override
@@ -960,7 +1000,7 @@ class _SettingsTile extends StatelessWidget {
         subtitle,
         style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
       ),
-      trailing: trailing ?? const Icon(Icons.chevron_right_rounded, color: Color(0xFF94A3B8), size: 20),
+      trailing: const Icon(Icons.chevron_right_rounded, color: Color(0xFF94A3B8), size: 20),
       onTap: onTap,
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
     );

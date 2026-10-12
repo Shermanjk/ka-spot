@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import '../services/kaspot_service.dart';
 import '../widgets/kaspot_avatar.dart';
+import 'circle_chat_screen.dart';
 
 class ConnectionsScreen extends StatefulWidget {
   const ConnectionsScreen({super.key});
@@ -15,13 +17,57 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
   final _idController = TextEditingController();
   bool _busy = false;
   bool _loading = true;
-  int _filterTab = 0; // 0 = All, 1 = Sharing, 2 = Requests
-
   List<Map<String, dynamic>> _people = [];
   List<Map<String, dynamic>> _requests = [];
   Map<String, bool> _sharing = {};
   Map<String, bool> _incomingSharing = {};
   String? _error;
+  Timer? _errorTimer;
+
+  Widget _relationshipBadge(String relationship, {VoidCallback? onTap}) {
+    Color bg;
+    Color text;
+    IconData icon;
+    switch (relationship) {
+      case 'Partner':
+        bg = const Color(0xFFFFE4E6);
+        text = const Color(0xFFE11D48);
+        icon = Icons.favorite_rounded;
+        break;
+      case 'Family':
+        bg = const Color(0xFFF3E8FF);
+        text = const Color(0xFF7C3AED);
+        icon = Icons.family_restroom_rounded;
+        break;
+      case 'Friend':
+      default:
+        bg = const Color(0xFFE0F2FE);
+        text = const Color(0xFF0284C7);
+        icon = Icons.people_alt_rounded;
+        break;
+    }
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 11, color: text),
+            const SizedBox(width: 4),
+            Text(
+              relationship,
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: text),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -31,8 +77,20 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
 
   @override
   void dispose() {
+    _errorTimer?.cancel();
     _idController.dispose();
     super.dispose();
+  }
+
+  void _setError(String? msg) {
+    _errorTimer?.cancel();
+    if (!mounted) return;
+    setState(() => _error = msg);
+    if (msg != null && msg.isNotEmpty) {
+      _errorTimer = Timer(const Duration(seconds: 4), () {
+        if (mounted) setState(() => _error = null);
+      });
+    }
   }
 
   Future<void> _load() async {
@@ -56,13 +114,14 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
         _error = null;
       });
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (mounted) _setError(e.toString());
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
   Future<void> _run(Future<void> Function() action, String success) async {
+    _errorTimer?.cancel();
     setState(() {
       _busy = true;
       _error = null;
@@ -72,7 +131,7 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
       await _load();
       if (mounted) _notify(success);
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+      if (mounted) _setError(e.toString().replaceFirst('Exception: ', ''));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -179,13 +238,17 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
                   const SizedBox(height: 16),
                   TextField(
                     controller: _idController,
+                    textCapitalization: TextCapitalization.characters,
                     decoration: const InputDecoration(
-                      hintText: 'Enter Account ID (UUID)',
+                      hintText: 'Enter Circle Code (e.g. KS-E7BE-D662)',
                       prefixIcon: Icon(Icons.badge_outlined, size: 20),
                     ),
                     autocorrect: false,
+                    onChanged: (_) {
+                      if (_error != null) _setError(null);
+                    },
                   ),
-                  const SizedBox(height: 10),
+                  const SizedBox(height: 12),
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton.icon(
@@ -194,10 +257,13 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
                           : () {
                               final id = _idController.text.trim();
                               if (id.isEmpty) {
-                                _notify('Please enter an account ID.');
+                                _notify('Please enter a Circle Code.');
                                 return;
                               }
-                              _run(() => KaSpotService.sendRequest(id), 'Connection request sent.');
+                              _run(
+                                () => KaSpotService.sendRequest(id),
+                                'Connection request sent.',
+                              );
                               _idController.clear();
                             },
                       icon: const Icon(Icons.send_rounded, size: 16),
@@ -210,7 +276,7 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
 
             const SizedBox(height: 10),
 
-            // 2. Your Account ID Card (Easy copy for sharing)
+            // 2. Your Account Code Card (Easy copy for sharing)
             if (myId.isNotEmpty)
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -228,12 +294,13 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const Text(
-                            'Your Account ID (share with friends)',
+                            'Your Circle Code (share with friends)',
                             style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFF64748B)),
                           ),
+                          const SizedBox(height: 2),
                           Text(
-                            myId,
-                            style: const TextStyle(fontSize: 12, fontFamily: 'monospace', color: Color(0xFF0F172A)),
+                            KaSpotService.accountCode,
+                            style: const TextStyle(fontSize: 14, fontFamily: 'monospace', fontWeight: FontWeight.w800, letterSpacing: 0.5, color: Color(0xFF0F172A)),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ],
@@ -241,8 +308,9 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
                     ),
                     TextButton.icon(
                       onPressed: () {
-                        Clipboard.setData(ClipboardData(text: myId));
-                        _notify('Account ID copied to clipboard.');
+                        final code = KaSpotService.accountCode;
+                        Clipboard.setData(ClipboardData(text: code));
+                        _notify('Circle Code $code copied to clipboard.');
                       },
                       icon: const Icon(Icons.copy_rounded, size: 14),
                       label: const Text('Copy'),
@@ -252,138 +320,155 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
                 ),
               ),
 
-            if (_error != null) ...[
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFEF2F2),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: const Color(0xFFFECACA)),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.error_outline, color: Color(0xFFDC2626), size: 20),
-                    const SizedBox(width: 10),
-                    Expanded(child: Text(_error!, style: const TextStyle(color: Color(0xFFB91C1C)))),
-                  ],
-                ),
-              ),
-            ],
-
-            const SizedBox(height: 20),
-
-            // 3. Filter Pills
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  _FilterChip(
-                    label: 'All (${_people.length})',
-                    selected: _filterTab == 0,
-                    onTap: () => setState(() => _filterTab = 0),
-                  ),
-                  const SizedBox(width: 8),
-                  _FilterChip(
-                    label: 'Sharing (${_people.where((p) => _sharing[p['other_id']] == true).length})',
-                    selected: _filterTab == 1,
-                    onTap: () => setState(() => _filterTab = 1),
-                  ),
-                  if (incomingRequests.isNotEmpty) ...[
-                    const SizedBox(width: 8),
-                    _FilterChip(
-                      label: 'Pending (${incomingRequests.length})',
-                      selected: _filterTab == 2,
-                      badge: true,
-                      onTap: () => setState(() => _filterTab = 2),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 250),
+              child: _error == null
+                  ? const SizedBox.shrink()
+                  : Padding(
+                      key: ValueKey('error-$_error'),
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFEF2F2),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: const Color(0xFFFECACA)),
+                          boxShadow: const [
+                            BoxShadow(color: Color(0x08000000), blurRadius: 4, offset: Offset(0, 2)),
+                          ],
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.error_outline_rounded, color: Color(0xFFDC2626), size: 20),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                _error!,
+                                style: const TextStyle(
+                                  color: Color(0xFFB91C1C),
+                                  fontSize: 13.5,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            GestureDetector(
+                              onTap: () => _setError(null),
+                              child: const Icon(Icons.close_rounded, color: Color(0xFF991B1B), size: 18),
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
-                  ],
-                ],
-              ),
             ),
 
-            const SizedBox(height: 14),
+            const SizedBox(height: 16),
 
-            // 4. Incoming Requests Section
-            if (incomingRequests.isNotEmpty && (_filterTab == 0 || _filterTab == 2)) ...[
+            // 3. Incoming Requests Section
+            if (incomingRequests.isNotEmpty) ...[
               _sectionHeader('Incoming Requests', incomingRequests.length),
               ...incomingRequests.map((req) => _requestCard(req)),
               const SizedBox(height: 14),
             ],
 
-            // 5. Circle Members List
+            // 4. Circle Members List
             if (_loading)
               const Padding(padding: EdgeInsets.all(32), child: Center(child: CircularProgressIndicator()))
             else if (_people.isEmpty)
               _emptyCard()
             else
-              ..._people
-                  .where((person) {
-                    if (_filterTab == 1) return _sharing[person['other_id']] == true;
-                    return true;
-                  })
-                  .map((person) {
-                    final otherId = person['other_id'] as String;
-                    final isSharingWithThem = _sharing[otherId] ?? false;
-                    final theyShareWithMe = _incomingSharing[otherId] ?? false;
-                    final name = person['display_name'] as String? ?? 'Member';
+              ..._people.map((person) {
+                final otherId = person['other_id'] as String;
+                final isSharingWithThem = _sharing[otherId] ?? false;
+                final theyShareWithMe = _incomingSharing[otherId] ?? false;
+                final name = person['display_name'] as String? ?? 'Member';
+                final rel = person['relationship'] as String? ?? 'Friend';
 
-                    return Container(
-                      margin: const EdgeInsets.only(bottom: 12),
-                      padding: const EdgeInsets.all(18),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
-                        boxShadow: const [
-                          BoxShadow(color: Color(0x06000000), blurRadius: 10, offset: Offset(0, 3)),
-                        ],
-                      ),
-                      child: Column(
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                    boxShadow: const [
+                      BoxShadow(color: Color(0x06000000), blurRadius: 10, offset: Offset(0, 3)),
+                    ],
+                  ),
+                  child: Column(
+                    children: [
+                      Row(
                         children: [
-                          Row(
-                            children: [
-                              KaSpotAvatar(
-                                name: name,
-                                avatarUrl: person['avatar_url'] as String?,
-                                size: 44,
-                                isCircle: true,
-                              ),
-                              const SizedBox(width: 14),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
+                          KaSpotAvatar(
+                            name: name,
+                            avatarUrl: person['avatar_url'] as String?,
+                            size: 44,
+                            isCircle: true,
+                          ),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
                                   children: [
-                                    Text(
-                                      name,
-                                      style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: Color(0xFF0F172A)),
+                                    Flexible(
+                                      child: Text(
+                                        name,
+                                        style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: Color(0xFF0F172A)),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
                                     ),
-                                    const SizedBox(height: 3),
-                                    Row(
-                                      children: [
-                                        Container(
-                                          width: 7,
-                                          height: 7,
-                                          decoration: BoxDecoration(
-                                            shape: BoxShape.circle,
-                                            color: theyShareWithMe ? const Color(0xFF10B981) : const Color(0xFF94A3B8),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 6),
-                                        Text(
-                                          theyShareWithMe
-                                              ? 'Sharing their location with you'
-                                              : 'Not sharing their location',
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            color: theyShareWithMe ? const Color(0xFF059669) : const Color(0xFF64748B),
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                      ],
+                                    const SizedBox(width: 8),
+                                    _relationshipBadge(
+                                      rel,
+                                      onTap: () => _changeCategorySheet(person),
                                     ),
                                   ],
                                 ),
+                                const SizedBox(height: 3),
+                                Row(
+                                  children: [
+                                    Container(
+                                      width: 7,
+                                      height: 7,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: theyShareWithMe ? const Color(0xFF10B981) : const Color(0xFF94A3B8),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      theyShareWithMe
+                                          ? 'Sharing their location with you'
+                                          : 'Not sharing their location',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: theyShareWithMe ? const Color(0xFF059669) : const Color(0xFF64748B),
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                              IconButton(
+                                icon: const Icon(Icons.chat_bubble_outline_rounded, color: Color(0xFF1E60AA)),
+                                tooltip: 'Chat & Updates',
+                                onPressed: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => CircleChatScreen(
+                                        otherId: otherId,
+                                        displayName: name,
+                                        avatarUrl: person['avatar_url'] as String?,
+                                        theyShareWithMe: theyShareWithMe,
+                                      ),
+                                    ),
+                                  );
+                                },
                               ),
                               IconButton(
                                 icon: const Icon(Icons.more_horiz_rounded, color: Color(0xFF94A3B8)),
@@ -528,8 +613,87 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
     );
   }
 
+
+
+  Future<void> _changeCategorySheet(Map<String, dynamic> person) async {
+    final otherId = person['other_id'] as String;
+    final name = person['display_name'] as String? ?? 'Member';
+    final currentRel = person['relationship'] as String? ?? 'Friend';
+
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Set Circle Category for $name',
+                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'Categorize this connection to tailor alerts and map labels',
+                  style: TextStyle(fontSize: 12.5, color: Color(0xFF64748B)),
+                ),
+                const SizedBox(height: 16),
+                _relOptionTile('Partner', 'Spouse or significant other', Icons.favorite_rounded, const Color(0xFFE11D48), currentRel, () async {
+                  Navigator.pop(context);
+                  await _run(() => KaSpotService.setCircleRelationship(otherId, 'Partner'), 'Updated $name to Partner.');
+                }),
+                _relOptionTile('Family', 'Parents, children, siblings, relatives', Icons.family_restroom_rounded, const Color(0xFF7C3AED), currentRel, () async {
+                  Navigator.pop(context);
+                  await _run(() => KaSpotService.setCircleRelationship(otherId, 'Family'), 'Updated $name to Family.');
+                }),
+                _relOptionTile('Friend', 'Friends, coworkers, and trusted peers', Icons.people_alt_rounded, const Color(0xFF0284C7), currentRel, () async {
+                  Navigator.pop(context);
+                  await _run(() => KaSpotService.setCircleRelationship(otherId, 'Friend'), 'Updated $name to Friends.');
+                }),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _relOptionTile(String title, String desc, IconData icon, Color color, String currentRel, VoidCallback onTap) {
+    final isSelected = currentRel == title;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: isSelected ? color.withValues(alpha: 0.08) : Colors.transparent,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: isSelected ? color : const Color(0xFFE2E8F0)),
+      ),
+      child: ListTile(
+        leading: Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.14),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(icon, color: color, size: 20),
+        ),
+        title: Text(title, style: TextStyle(fontWeight: FontWeight.w800, color: color)),
+        subtitle: Text(desc, style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+        trailing: isSelected ? Icon(Icons.check_circle_rounded, color: color) : null,
+        onTap: onTap,
+      ),
+    );
+  }
+
   Future<void> _showPersonOptions(Map<String, dynamic> person) async {
     final name = person['display_name'] as String? ?? 'Member';
+    final rel = person['relationship'] as String? ?? 'Friend';
+
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -539,6 +703,16 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
+              leading: const Icon(Icons.category_outlined, color: Color(0xFF1E60AA)),
+              title: const Text('Change Circle Category', style: TextStyle(fontWeight: FontWeight.w700)),
+              subtitle: Text('Currently: $rel'),
+              onTap: () {
+                Navigator.pop(context);
+                _changeCategorySheet(person);
+              },
+            ),
+            const Divider(height: 1),
+            ListTile(
               leading: const Icon(Icons.person_remove_outlined, color: Color(0xFFDC2626)),
               title: Text('Remove $name from Circle', style: const TextStyle(color: Color(0xFFDC2626), fontWeight: FontWeight.w700)),
               onTap: () {
@@ -547,37 +721,6 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
               },
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _FilterChip extends StatelessWidget {
-  const _FilterChip({required this.label, required this.selected, required this.onTap, this.badge = false});
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-  final bool badge;
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          color: selected ? const Color(0xFF1E60AA) : Colors.white,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: selected ? const Color(0xFF1E60AA) : const Color(0xFFCBD5E1)),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w700,
-            color: selected ? Colors.white : const Color(0xFF475569),
-          ),
         ),
       ),
     );

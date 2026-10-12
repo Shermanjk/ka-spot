@@ -1,5 +1,11 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import '../services/in_app_notification_service.dart';
+import '../services/kaspot_service.dart';
+import '../widgets/in_app_notification_banner.dart';
 import '../widgets/interactive_nav_bar.dart';
+import 'circle_chat_screen.dart';
 import 'connections_screen.dart';
 import 'map_screen.dart';
 import 'places_screen.dart';
@@ -14,6 +20,106 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _selected = 0;
+  RealtimeChannel? _msgChannel;
+
+  @override
+  void initState() {
+    super.initState();
+    _subscribeNotifications();
+  }
+
+  void _subscribeNotifications() {
+    if (!KaSpotService.isConfigured) return;
+    final myId = KaSpotService.userId;
+    if (myId.isEmpty) return;
+
+    final channel = KaSpotService.client!.channel('kaspot-inapp-$myId')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.insert,
+        schema: 'public',
+        table: 'circle_messages',
+        filter: PostgresChangeFilter(
+          type: PostgresChangeFilterType.eq,
+          column: 'recipient_id',
+          value: myId,
+        ),
+        callback: (payload) async {
+          final newRecord = payload.newRecord;
+          final senderId = newRecord['sender_id'] as String?;
+          final content = newRecord['content'] as String? ?? '';
+          if (senderId == null || senderId == myId) return;
+
+          final prefs = await KaSpotService.notificationPreferences();
+          if (prefs['connection_notifications_enabled'] == false) return;
+
+          final conns = await KaSpotService.connections();
+          final sender = conns.firstWhere(
+            (c) => c['other_id'] == senderId,
+            orElse: () => <String, dynamic>{},
+          );
+          final senderName = sender['display_name'] as String? ?? 'Circle Member';
+          final rel = sender['relationship'] as String? ?? 'Friend';
+          final avatar = sender['avatar_url'] as String?;
+
+          InAppNotificationService.show(InAppNotificationPayload(
+            id: 'msg-${newRecord['id'] ?? DateTime.now().millisecondsSinceEpoch}',
+            type: InAppNotificationType.chat,
+            title: '$rel · $senderName',
+            body: content,
+            avatarUrl: avatar,
+            relationship: rel,
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => CircleChatScreen(
+                    otherId: senderId,
+                    displayName: senderName,
+                    avatarUrl: avatar,
+                  ),
+                ),
+              );
+            },
+          ));
+        },
+      )
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.insert,
+        schema: 'public',
+        table: 'connection_requests',
+        filter: PostgresChangeFilter(
+          type: PostgresChangeFilterType.eq,
+          column: 'recipient_id',
+          value: myId,
+        ),
+        callback: (payload) async {
+          final prefs = await KaSpotService.notificationPreferences();
+          if (prefs['connection_notifications_enabled'] == false) return;
+
+          InAppNotificationService.show(InAppNotificationPayload(
+            id: 'req-${DateTime.now().millisecondsSinceEpoch}',
+            type: InAppNotificationType.request,
+            title: '👋 New Circle Invitation',
+            body: 'Someone sent you an invitation to join their circle',
+            onTap: () {
+              if (mounted) setState(() => _selected = 1);
+            },
+          ));
+        },
+      );
+
+    _msgChannel = channel;
+    channel.subscribe();
+  }
+
+  @override
+  void dispose() {
+    final ch = _msgChannel;
+    if (ch != null && KaSpotService.isConfigured) {
+      unawaited(KaSpotService.client!.removeChannel(ch));
+    }
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -25,9 +131,14 @@ class _HomeShellState extends State<HomeShell> {
     ];
 
     return Scaffold(
-      body: IndexedStack(
-        index: _selected,
-        children: screens,
+      body: Stack(
+        children: [
+          IndexedStack(
+            index: _selected,
+            children: screens,
+          ),
+          const InAppNotificationBanner(),
+        ],
       ),
       bottomNavigationBar: InteractiveNavBar(
         selectedIndex: _selected,
@@ -58,3 +169,4 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 }
+
