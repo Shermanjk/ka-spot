@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/kaspot_service.dart';
+import '../utils/auth_error_formatter.dart';
 import '../utils/email_validator.dart';
 import '../widgets/google_sign_in_button.dart';
 import '../widgets/kaspot_logo.dart';
 import 'forgot_password_screen.dart';
 import 'register_screen.dart';
-import 'verification_pending_screen.dart';
 
 /// Clean, professional Sign-In screen with calm error reporting and accessible navigation.
 class SignInScreen extends StatefulWidget {
@@ -18,14 +18,24 @@ class SignInScreen extends StatefulWidget {
   State<SignInScreen> createState() => _SignInScreenState();
 }
 
+/// Which action is currently in flight on the Sign In screen. Exactly one
+/// control renders its progress indicator; every other action is disabled but
+/// keeps its label.
+enum _BusyAction { none, password, google, resend }
+
 class _SignInScreenState extends State<SignInScreen> {
   final _form = GlobalKey<FormState>();
   late final TextEditingController _email;
   final _password = TextEditingController();
-  bool _busy = false;
+  _BusyAction _busyAction = _BusyAction.none;
+  bool get _busy => _busyAction != _BusyAction.none;
   bool _obscure = true;
   String? _authError;
+  String? _emailError;
+  String? _passwordError;
+  String? _resendSuccess;
   bool _isUnconfirmed = false;
+  AutovalidateMode _autoValidateMode = AutovalidateMode.disabled;
 
   @override
   void initState() {
@@ -41,9 +51,16 @@ class _SignInScreenState extends State<SignInScreen> {
   }
 
   void _clearError() {
-    if (_authError != null || _isUnconfirmed) {
+    if (_authError != null ||
+        _emailError != null ||
+        _passwordError != null ||
+        _resendSuccess != null ||
+        _isUnconfirmed) {
       setState(() {
         _authError = null;
+        _emailError = null;
+        _passwordError = null;
+        _resendSuccess = null;
         _isUnconfirmed = false;
       });
     }
@@ -51,9 +68,10 @@ class _SignInScreenState extends State<SignInScreen> {
 
   Future<void> _submit() async {
     _clearError();
+    setState(() => _autoValidateMode = AutovalidateMode.onUserInteraction);
     if (!_form.currentState!.validate()) return;
 
-    setState(() => _busy = true);
+    setState(() => _busyAction = _BusyAction.password);
     try {
       await KaSpotService.signIn(_email.text.trim(), _password.text);
       if (!mounted) return;
@@ -63,31 +81,69 @@ class _SignInScreenState extends State<SignInScreen> {
       if (!mounted) return;
       final msg = e.message.toLowerCase();
       setState(() {
-        if (msg.contains('invalid login credentials') || msg.contains('invalid') || msg.contains('not found')) {
-          _isUnconfirmed = false;
-          _authError = 'Incorrect email or password. Please check your credentials or create an account.';
-        } else if (msg.contains('email not confirmed')) {
+        // Account-level errors belong to the single banner only: duplicated
+        // per-field variants would misattribute network or Google issues to
+        // the email field.
+        _emailError = null;
+        _passwordError = null;
+        if (msg.contains('email not confirmed')) {
           _isUnconfirmed = true;
           _authError = 'Your email address has not been confirmed yet. Please verify your inbox to continue.';
+        } else if (msg.contains('invalid login credentials') ||
+            msg.contains('invalid credentials') ||
+            msg.contains('invalid') ||
+            msg.contains('not found')) {
+          // Never claim the account is missing: it may exist with a Google
+          // credential that simply has no KaSpot password yet.
+          _isUnconfirmed = false;
+          _authError = AuthErrorFormatter.invalidCredentialsMessage;
         } else {
           _isUnconfirmed = false;
-          _authError = e.message;
+          _authError = AuthErrorFormatter.format(e);
         }
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _isUnconfirmed = false;
-        _authError = e.toString().replaceFirst('Exception: ', '');
+        _emailError = null;
+        _passwordError = null;
+        _authError = AuthErrorFormatter.format(e);
       });
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() => _busyAction = _BusyAction.none);
+    }
+  }
+
+  Future<void> _resendVerification() async {
+    final cleanEmail = _email.text.trim();
+    if (cleanEmail.isEmpty) return;
+    setState(() {
+      _busyAction = _BusyAction.resend;
+      _resendSuccess = null;
+    });
+    try {
+      await KaSpotService.resendVerificationEmail(cleanEmail);
+      if (mounted) {
+        setState(() {
+          _resendSuccess = 'Confirmation email sent to $cleanEmail! Please check your inbox.';
+          _authError = null;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _authError = AuthErrorFormatter.format(e);
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _busyAction = _BusyAction.none);
     }
   }
 
   Future<void> _signInWithGoogle() async {
     _clearError();
-    setState(() => _busy = true);
+    setState(() => _busyAction = _BusyAction.google);
     try {
       await KaSpotService.signInWithGoogle();
       if (!mounted) return;
@@ -96,10 +152,10 @@ class _SignInScreenState extends State<SignInScreen> {
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _authError = e.toString().replaceFirst('Exception: ', ''));
+        setState(() => _authError = AuthErrorFormatter.format(e));
       }
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() => _busyAction = _BusyAction.none);
     }
   }
 
@@ -133,6 +189,12 @@ class _SignInScreenState extends State<SignInScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        const Center(
+                          child: Padding(
+                            padding: EdgeInsets.only(bottom: 20),
+                            child: KaSpotWordmark(fontSize: 32),
+                          ),
+                        ),
                         const Text(
                           'Welcome Back',
                           style: TextStyle(
@@ -152,8 +214,9 @@ class _SignInScreenState extends State<SignInScreen> {
                         // 1-Tap Google Sign-In Shortcut
                         GoogleSignInButton(
                           onPressed: _busy ? null : _signInWithGoogle,
-                          busy: _busy,
+                          busy: _busyAction == _BusyAction.google,
                           label: 'Continue with Google',
+                          busyLabel: 'Signing in…',
                         ),
                         const SizedBox(height: 18),
                         const Row(
@@ -175,6 +238,36 @@ class _SignInScreenState extends State<SignInScreen> {
                         ),
                         const SizedBox(height: 18),
 
+                        // Resend Success Banner
+                        if (_resendSuccess != null) ...[
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFECFDF5),
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(color: const Color(0xFFA7F3D0)),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.check_circle_outline_rounded, color: Color(0xFF059669), size: 18),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    _resendSuccess!,
+                                    style: const TextStyle(
+                                      fontSize: 13,
+                                      color: Color(0xFF065F46),
+                                      fontWeight: FontWeight.w600,
+                                      height: 1.35,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                        ],
+
                         // Calm, Single Authentication Error Banner
                         if (_authError != null) ...[
                           Container(
@@ -190,7 +283,7 @@ class _SignInScreenState extends State<SignInScreen> {
                                 Row(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    const Icon(Icons.info_outline_rounded, color: Color(0xFFDC2626), size: 18),
+                                    const Icon(Icons.error_outline_rounded, color: Color(0xFFDC2626), size: 18),
                                     const SizedBox(width: 10),
                                     Expanded(
                                       child: Text(
@@ -206,6 +299,8 @@ class _SignInScreenState extends State<SignInScreen> {
                                     GestureDetector(
                                       onTap: () => setState(() {
                                         _authError = null;
+                                        _emailError = null;
+                                        _passwordError = null;
                                         _isUnconfirmed = false;
                                       }),
                                       child: const Icon(Icons.close_rounded, size: 18, color: Color(0xFF991B1B)),
@@ -216,16 +311,7 @@ class _SignInScreenState extends State<SignInScreen> {
                                   const SizedBox(height: 10),
                                   InkWell(
                                     borderRadius: BorderRadius.circular(10),
-                                    onTap: () {
-                                      Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (_) => VerificationPendingScreen(
-                                            email: _email.text.trim(),
-                                          ),
-                                        ),
-                                      );
-                                    },
+                                    onTap: _busy ? null : _resendVerification,
                                     child: Container(
                                       width: double.infinity,
                                       padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 12),
@@ -234,14 +320,14 @@ class _SignInScreenState extends State<SignInScreen> {
                                         borderRadius: BorderRadius.circular(10),
                                         border: Border.all(color: const Color(0xFFFCA5A5)),
                                       ),
-                                      child: const Row(
+                                      child: Row(
                                         mainAxisAlignment: MainAxisAlignment.center,
                                         children: [
-                                          Icon(Icons.mark_email_read_outlined, size: 16, color: Color(0xFFDC2626)),
-                                          SizedBox(width: 6),
+                                          const Icon(Icons.mark_email_read_outlined, size: 16, color: Color(0xFFDC2626)),
+                                          const SizedBox(width: 6),
                                           Text(
-                                            'Verify or Resend Confirmation Link',
-                                            style: TextStyle(
+                                            _busyAction == _BusyAction.resend ? 'Sending link...' : 'Resend Confirmation Email Now',
+                                            style: const TextStyle(
                                               fontSize: 12.5,
                                               fontWeight: FontWeight.w700,
                                               color: Color(0xFFDC2626),
@@ -263,15 +349,40 @@ class _SignInScreenState extends State<SignInScreen> {
                           controller: _email,
                           keyboardType: TextInputType.emailAddress,
                           autocorrect: false,
+                          autovalidateMode: _autoValidateMode,
                           onChanged: (_) => _clearError(),
                           decoration: InputDecoration(
                             labelText: 'Email address',
-                            prefixIcon: const Icon(Icons.mail_outline_rounded, size: 20),
+                            errorText: _emailError,
+                            errorMaxLines: 3,
+                            prefixIcon: Icon(
+                              Icons.mail_outline_rounded,
+                              size: 20,
+                              color: _emailError != null ? const Color(0xFFDC2626) : null,
+                            ),
                             filled: true,
-                            fillColor: const Color(0xFFF8FAFC),
-                            border: OutlineInputBorder(
+                            fillColor: _emailError != null ? const Color(0xFFFEF2F2) : const Color(0xFFF8FAFC),
+                            enabledBorder: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(14),
-                              borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                              borderSide: BorderSide(
+                                color: _emailError != null ? const Color(0xFFDC2626) : const Color(0xFFE2E8F0),
+                                width: _emailError != null ? 1.6 : 1.0,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: BorderSide(
+                                color: _emailError != null ? const Color(0xFFDC2626) : const Color(0xFF1E60AA),
+                                width: 1.8,
+                              ),
+                            ),
+                            errorBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: const BorderSide(color: Color(0xFFDC2626), width: 1.6),
+                            ),
+                            focusedErrorBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: const BorderSide(color: Color(0xFFDC2626), width: 2.0),
                             ),
                           ),
                           validator: (v) => EmailValidator.validate(v),
@@ -282,19 +393,44 @@ class _SignInScreenState extends State<SignInScreen> {
                         TextFormField(
                           controller: _password,
                           obscureText: _obscure,
+                          autovalidateMode: _autoValidateMode,
                           onChanged: (_) => _clearError(),
                           decoration: InputDecoration(
                             labelText: 'Password',
-                            prefixIcon: const Icon(Icons.lock_outline_rounded, size: 20),
+                            errorText: _passwordError,
+                            errorMaxLines: 2,
+                            prefixIcon: Icon(
+                              Icons.lock_outline_rounded,
+                              size: 20,
+                              color: _passwordError != null ? const Color(0xFFDC2626) : null,
+                            ),
                             suffixIcon: IconButton(
                               onPressed: () => setState(() => _obscure = !_obscure),
                               icon: Icon(_obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined),
                             ),
                             filled: true,
-                            fillColor: const Color(0xFFF8FAFC),
-                            border: OutlineInputBorder(
+                            fillColor: _passwordError != null ? const Color(0xFFFEF2F2) : const Color(0xFFF8FAFC),
+                            enabledBorder: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(14),
-                              borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                              borderSide: BorderSide(
+                                color: _passwordError != null ? const Color(0xFFDC2626) : const Color(0xFFE2E8F0),
+                                width: _passwordError != null ? 1.6 : 1.0,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: BorderSide(
+                                color: _passwordError != null ? const Color(0xFFDC2626) : const Color(0xFF1E60AA),
+                                width: 1.8,
+                              ),
+                            ),
+                            errorBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: const BorderSide(color: Color(0xFFDC2626), width: 1.6),
+                            ),
+                            focusedErrorBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: const BorderSide(color: Color(0xFFDC2626), width: 2.0),
                             ),
                           ),
                           validator: (v) {
@@ -334,7 +470,7 @@ class _SignInScreenState extends State<SignInScreen> {
                               backgroundColor: const Color(0xFF1E60AA),
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                             ),
-                            child: _busy
+                            child: _busyAction == _BusyAction.password
                                 ? const SizedBox(
                                     width: 20,
                                     height: 20,

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/kaspot_service.dart';
+import '../utils/auth_error_formatter.dart';
 import '../utils/email_validator.dart';
 import '../widgets/google_sign_in_button.dart';
 import '../widgets/kaspot_logo.dart';
@@ -18,6 +19,11 @@ class RegisterScreen extends StatefulWidget {
   State<RegisterScreen> createState() => _RegisterScreenState();
 }
 
+/// Which action is currently in flight on the Register screen. Exactly one
+/// control renders its progress indicator; every other action is disabled but
+/// keeps its label.
+enum _BusyAction { none, password, google }
+
 class _RegisterScreenState extends State<RegisterScreen> {
   final _form = GlobalKey<FormState>();
   final _name = TextEditingController();
@@ -25,10 +31,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _password = TextEditingController();
   final _confirmPassword = TextEditingController();
 
-  bool _busy = false;
+  _BusyAction _busyAction = _BusyAction.none;
+  bool get _busy => _busyAction != _BusyAction.none;
   bool _obscurePassword = true;
   bool _obscureConfirm = true;
   String? _authError;
+  String? _emailError;
+  String? _passwordError;
+  AutovalidateMode _autoValidateMode = AutovalidateMode.disabled;
 
   @override
   void initState() {
@@ -46,20 +56,25 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   void _clearError() {
-    if (_authError != null) {
-      setState(() => _authError = null);
+    if (_authError != null || _emailError != null || _passwordError != null) {
+      setState(() {
+        _authError = null;
+        _emailError = null;
+        _passwordError = null;
+      });
     }
   }
 
   String? _validateEmail(String? value) {
-    return EmailValidator.validate(value);
+    return EmailValidator.validate(value, requireGoogleAccount: true);
   }
 
   Future<void> _submit() async {
     _clearError();
+    setState(() => _autoValidateMode = AutovalidateMode.onUserInteraction);
     if (!_form.currentState!.validate()) return;
 
-    setState(() => _busy = true);
+    setState(() => _busyAction = _BusyAction.password);
     try {
       final result = await KaSpotService.register(
         _name.text.trim(),
@@ -86,37 +101,44 @@ class _RegisterScreenState extends State<RegisterScreen> {
       if (!mounted) return;
       final msg = e.message.toLowerCase();
       setState(() {
+        _authError = null;
+        _emailError = null;
+        _passwordError = null;
         if (msg.contains('already') || msg.contains('exists')) {
-          _authError = 'An account with this email already exists. Please sign in instead.';
+          // The email field caused this failure: inline only, no banner.
+          _emailError = 'An account with this email already exists. Please sign in instead.';
         } else {
-          _authError = e.message;
+          // Account-level errors belong to the single banner only.
+          _authError = AuthErrorFormatter.format(e);
         }
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _authError = e.toString().replaceFirst('Exception: ', '');
+        _emailError = null;
+        _passwordError = null;
+        _authError = AuthErrorFormatter.format(e);
       });
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() => _busyAction = _BusyAction.none);
     }
   }
 
-  Future<void> _signInWithGoogle() async {
+  Future<void> _registerWithGoogle() async {
     _clearError();
-    setState(() => _busy = true);
+    setState(() => _busyAction = _BusyAction.google);
     try {
-      await KaSpotService.signInWithGoogle();
+      await KaSpotService.registerWithGoogle();
       if (!mounted) return;
       if (KaSpotService.isAuthenticated) {
         Navigator.of(context).popUntil((route) => route.isFirst);
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _authError = e.toString().replaceFirst('Exception: ', ''));
+        setState(() => _authError = AuthErrorFormatter.format(e));
       }
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() => _busyAction = _BusyAction.none);
     }
   }
 
@@ -150,6 +172,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        const Center(
+                          child: Padding(
+                            padding: EdgeInsets.only(bottom: 20),
+                            child: KaSpotWordmark(fontSize: 32),
+                          ),
+                        ),
                         const Text(
                           'Create Account',
                           style: TextStyle(
@@ -166,16 +194,17 @@ class _RegisterScreenState extends State<RegisterScreen> {
                         ),
                         const SizedBox(height: 20),
 
-                        // 1-Tap Google Sign-In Shortcut
+                        // 1-Tap Google Registration
                         GoogleSignInButton(
-                          onPressed: _busy ? null : _signInWithGoogle,
-                          busy: _busy,
-                          label: 'Continue with Google',
+                          onPressed: _busy ? null : _registerWithGoogle,
+                          busy: _busyAction == _BusyAction.google,
+                          label: 'Sign up with Google',
+                          busyLabel: 'Creating account…',
                         ),
                         const SizedBox(height: 6),
                         const Center(
                           child: Text(
-                            'Instant sign-in with verified Google account',
+                            'Register instantly with your verified Google account',
                             style: TextStyle(
                               fontSize: 11.5,
                               color: Color(0xFF64748B),
@@ -215,7 +244,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                             child: Row(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                const Icon(Icons.info_outline_rounded, color: Color(0xFFDC2626), size: 18),
+                                const Icon(Icons.error_outline_rounded, color: Color(0xFFDC2626), size: 18),
                                 const SizedBox(width: 10),
                                 Expanded(
                                   child: Text(
@@ -242,6 +271,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                         TextFormField(
                           controller: _name,
                           textCapitalization: TextCapitalization.words,
+                          autovalidateMode: _autoValidateMode,
                           onChanged: (_) => _clearError(),
                           decoration: InputDecoration(
                             labelText: 'Full name',
@@ -267,15 +297,40 @@ class _RegisterScreenState extends State<RegisterScreen> {
                           controller: _email,
                           keyboardType: TextInputType.emailAddress,
                           autocorrect: false,
+                          autovalidateMode: _autoValidateMode,
                           onChanged: (_) => _clearError(),
                           decoration: InputDecoration(
                             labelText: 'Email address',
-                            prefixIcon: const Icon(Icons.mail_outline_rounded, size: 20),
+                            errorText: _emailError,
+                            errorMaxLines: 3,
+                            prefixIcon: Icon(
+                              Icons.mail_outline_rounded,
+                              size: 20,
+                              color: _emailError != null ? const Color(0xFFDC2626) : null,
+                            ),
                             filled: true,
-                            fillColor: const Color(0xFFF8FAFC),
-                            border: OutlineInputBorder(
+                            fillColor: _emailError != null ? const Color(0xFFFEF2F2) : const Color(0xFFF8FAFC),
+                            enabledBorder: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(14),
-                              borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                              borderSide: BorderSide(
+                                color: _emailError != null ? const Color(0xFFDC2626) : const Color(0xFFE2E8F0),
+                                width: _emailError != null ? 1.6 : 1.0,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: BorderSide(
+                                color: _emailError != null ? const Color(0xFFDC2626) : const Color(0xFF1E60AA),
+                                width: 1.8,
+                              ),
+                            ),
+                            errorBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: const BorderSide(color: Color(0xFFDC2626), width: 1.6),
+                            ),
+                            focusedErrorBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: const BorderSide(color: Color(0xFFDC2626), width: 2.0),
                             ),
                           ),
                           validator: _validateEmail,
@@ -286,20 +341,45 @@ class _RegisterScreenState extends State<RegisterScreen> {
                         TextFormField(
                           controller: _password,
                           obscureText: _obscurePassword,
+                          autovalidateMode: _autoValidateMode,
                           onChanged: (_) => _clearError(),
                           decoration: InputDecoration(
                             labelText: 'Password',
-                            helperText: 'Must be at least 8 characters',
-                            prefixIcon: const Icon(Icons.lock_outline_rounded, size: 20),
+                            helperText: _passwordError == null ? 'Must be at least 8 characters' : null,
+                            errorText: _passwordError,
+                            errorMaxLines: 2,
+                            prefixIcon: Icon(
+                              Icons.lock_outline_rounded,
+                              size: 20,
+                              color: _passwordError != null ? const Color(0xFFDC2626) : null,
+                            ),
                             suffixIcon: IconButton(
                               onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
                               icon: Icon(_obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined),
                             ),
                             filled: true,
-                            fillColor: const Color(0xFFF8FAFC),
-                            border: OutlineInputBorder(
+                            fillColor: _passwordError != null ? const Color(0xFFFEF2F2) : const Color(0xFFF8FAFC),
+                            enabledBorder: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(14),
-                              borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                              borderSide: BorderSide(
+                                color: _passwordError != null ? const Color(0xFFDC2626) : const Color(0xFFE2E8F0),
+                                width: _passwordError != null ? 1.6 : 1.0,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: BorderSide(
+                                color: _passwordError != null ? const Color(0xFFDC2626) : const Color(0xFF1E60AA),
+                                width: 1.8,
+                              ),
+                            ),
+                            errorBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: const BorderSide(color: Color(0xFFDC2626), width: 1.6),
+                            ),
+                            focusedErrorBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: const BorderSide(color: Color(0xFFDC2626), width: 2.0),
                             ),
                           ),
                           validator: (v) {
@@ -314,6 +394,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                         TextFormField(
                           controller: _confirmPassword,
                           obscureText: _obscureConfirm,
+                          autovalidateMode: _autoValidateMode,
                           onChanged: (_) => _clearError(),
                           decoration: InputDecoration(
                             labelText: 'Confirm password',
@@ -376,7 +457,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                               backgroundColor: const Color(0xFF1E60AA),
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                             ),
-                            child: _busy
+                            child: _busyAction == _BusyAction.password
                                 ? const SizedBox(
                                     width: 20,
                                     height: 20,

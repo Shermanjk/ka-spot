@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KaSpot Brand Wordmark & Vector Owl Integration</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@800;900&display=swap" rel="stylesheet">
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      background: #0B111E;
+      color: #F8FAFC;
+      font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+      padding: 40px 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 32px;
+      max-width: 800px;
+    }
+    h1 {
+      font-size: 28px;
+      font-weight: 900;
+      color: #FFFFFF;
+      letter-spacing: -0.6px;
+      margin-bottom: 8px;
+    }
+    p {
+      color: #94A3B8;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+    .card-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+      width: 100%;
+      max-width: 960px;
+    }
+    .card {
+      background: #151D2E;
+      border: 1px solid #1E293B;
+      border-radius: 20px;
+      padding: 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+    }
+    .card.light {
+      background: #FFFFFF;
+      border-color: #E2E8F0;
+      color: #0F172A;
+      box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.08);
+    }
+    .card-title {
+      font-size: 13px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #64748B;
+    }
+    .card.light .card-title {
+      color: #94A3B8;
+    }
+    .preview-stage {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 36px 20px;
+      border-radius: 14px;
+      background: #243665;
+      min-height: 140px;
+    }
+    .card.light .preview-stage {
+      background: #FFFFFF;
+      border: 1px dashed #CBD5E1;
+    }
+    .side-by-side {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+    @media (max-width: 768px) {
+      .side-by-side {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Wordmark Typography matching Reference Design */
+    .wordmark-container {
+      display: inline-flex;
+      align-items: baseline;
+      justify-content: center;
+      line-height: 1;
+      user-select: none;
+    }
+    .text-ka-dark {
+      color: #DCEBF4;
+      font-weight: 900;
+      letter-spacing: -0.04em;
+    }
+    .text-spot-dark {
+      color: #0D8AD1;
+      font-weight: 900;
+      letter-spacing: -0.04em;
+    }
+    .text-ka-light {
+      color: #0D2DD1;
+      font-weight: 900;
+      letter-spacing: -0.04em;
+    }
+    .text-spot-light {
+      color: #0D8AD1;
+      font-weight: 900;
+      letter-spacing: -0.04em;
+    }
+
+    /* Exact vector owl nested with tight professional kerning (overlapping ears into p and t) */
+    .owl-vector-badge {
+      display: inline-block;
+      height: 1.24em;
+      width: auto;
+      vertical-align: -0.22em;
+      margin-left: -0.16em;
+      margin-right: -0.18em;
+      position: relative;
+      z-index: 1;
+      object-fit: contain;
+    }
+
+    /* Size comparisons */
+    .size-strip {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      width: 100%;
+    }
+    .size-item {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      border-bottom: 1px dashed rgba(148, 163, 184, 0.15);
+      padding-bottom: 16px;
+    }
+    .card.light .size-item {
+      border-bottom-color: #E2E8F0;
+    }
+    .size-item:last-child {
+      border-bottom: none;
+      padding-bottom: 0;
+    }
+    .size-tag {
+      font-size: 13px;
+      font-weight: 800;
+      color: #64748B;
+      min-width: 50px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <h1>KaSpot Official Wordmark</h1>
+    <p>Integrated with the <strong>New Blue-and-White Vector Owl Logo</strong> &bull; Snug, Professional Kerning with <strong>Zero Awkward Gap</strong>.</p>
+  </div>
+
+  <div class="card-grid">
+
+    <!-- Section 1: Side by Side (Light Canvas vs Dark Canvas) -->
+    <div class="side-by-side">
+
+      <!-- Light / White Canvas -->
+      <div class="card light">
+        <div class="card-title">Light / White Background (#FFFFFF)</div>
+        <div class="preview-stage">
+          <div class="wordmark-container" style="font-size: 64px;">
+            <span class="text-ka-light">Ka</span><span class="text-spot-light">Sp</span>
+            <img class="owl-vector-badge" 
+                 src="kaspot_new_owl_hero.png" 
+                 alt="KaSpot Owl" />
+            <span class="text-spot-light">t</span>
+          </div>
+        </div>
+        <p style="font-size: 13px; color: #64748B;">Matches reference sheet: Cyan contour line, pure white head, dual blue eyes with specular highlight, black droplet beak.</p>
+      </div>
+
+      <!-- Dark Canvas -->
+      <div class="card">
+        <div class="card-title">Dark Canvas (#243665 Navy)</div>
+        <div class="preview-stage">
+          <div class="wordmark-container" style="font-size: 64px;">
+            <span class="text-ka-dark">Ka</span><span class="text-spot-dark">Sp</span>
+            <img class="owl-vector-badge" 
+                 src="kaspot_new_owl_hero.png" 
+                 alt="KaSpot Owl" />
+            <span class="text-spot-dark">t</span>
+          </div>
+        </div>
+        <p style="font-size: 13px; color: #94A3B8;">Matches reference sheet: Ice blue "Ka", bright sky-blue "Spot", luminous white head with cyan contour outline.</p>
+      </div>
+
+    </div>
+
+    <!-- Section 2: Large Hero Brand View -->
+    <div class="card">
+      <div class="card-title">Hero Brand Scale (88px Typography)</div>
+      <div class="preview-stage" style="background: #1B2D52;">
+        <div class="wordmark-container" style="font-size: 88px;">
+          <span class="text-ka-dark">Ka</span><span class="text-spot-dark">Sp</span>
+          <img class="owl-vector-badge" 
+               src="kaspot_new_owl_hero.png" 
+               alt="Hero Brand Owl" />
+          <span class="text-spot-dark">t</span>
+        </div>
+      </div>
+      <p style="font-size: 13px; color: #94A3B8;">Ears align seamlessly with the capital height, chin aligns with the descender of 'p', and horizontal gap between 'p' and 't' is tight and cohesive.</p>
+    </div>
+
+    <!-- Section 3: Multi-Size Scaling (Light Canvas) -->
+    <div class="card light">
+      <div class="card-title">In-App Multi-Size Scaling (Light Canvas)</div>
+      <div class="size-strip">
+
+        <!-- 64px -->
+        <div class="size-item">
+          <div class="size-tag">64px</div>
+          <div class="wordmark-container" style="font-size: 64px;">
+            <span class="text-ka-light">Ka</span><span class="text-spot-light">Sp</span>
+            <img class="owl-vector-badge" src="kaspot_new_owl_hero.png" alt="Owl" />
+            <span class="text-spot-light">t</span>
+          </div>
+        </div>
+
+        <!-- 40px -->
+        <div class="size-item">
+          <div class="size-tag">40px</div>
+          <div class="wordmark-container" style="font-size: 40px;">
+            <span class="text-ka-light">Ka</span><span class="text-spot-light">Sp</span>
+            <img class="owl-vector-badge" src="kaspot_new_owl_hero.png" alt="Owl" />
+            <span class="text-spot-light">t</span>
+          </div>
+        </div>
+
+        <!-- 28px -->
+        <div class="size-item">
+          <div class="size-tag">28px</div>
+          <div class="wordmark-container" style="font-size: 28px;">
+            <span class="text-ka-light">Ka</span><span class="text-spot-light">Sp</span>
+            <img class="owl-vector-badge" src="kaspot_new_owl_hero.png" alt="Owl" />
+            <span class="text-spot-light">t</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Section 4: Multi-Size Scaling (Dark Canvas) -->
+    <div class="card">
+      <div class="card-title">In-App Multi-Size Scaling (Dark Canvas)</div>
+      <div class="size-strip">
+
+        <!-- 64px -->
+        <div class="size-item">
+          <div class="size-tag">64px</div>
+          <div class="wordmark-container" style="font-size: 64px;">
+            <span class="text-ka-dark">Ka</span><span class="text-spot-dark">Sp</span>
+            <img class="owl-vector-badge" src="kaspot_new_owl_hero.png" alt="Owl" />
+            <span class="text-spot-dark">t</span>
+          </div>
+        </div>
+
+        <!-- 40px -->
+        <div class="size-item">
+          <div class="size-tag">40px</div>
+          <div class="wordmark-container" style="font-size: 40px;">
+            <span class="text-ka-dark">Ka</span><span class="text-spot-dark">Sp</span>
+            <img class="owl-vector-badge" src="kaspot_new_owl_hero.png" alt="Owl" />
+            <span class="text-spot-dark">t</span>
+          </div>
+        </div>
+
+        <!-- 28px -->
+        <div class="size-item">
+          <div class="size-tag">28px</div>
+          <div class="wordmark-container" style="font-size: 28px;">
+            <span class="text-ka-dark">Ka</span><span class="text-spot-dark">Sp</span>
+            <img class="owl-vector-badge" src="kaspot_new_owl_hero.png" alt="Owl" />
+            <span class="text-spot-dark">t</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+</body>
+</html>

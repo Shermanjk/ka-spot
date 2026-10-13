@@ -313,7 +313,21 @@ class _CircleChatScreenState extends State<CircleChatScreen> {
                       ),
                       child: TextField(
                         controller: _textController,
+                        maxLength: 500,
                         textCapitalization: TextCapitalization.sentences,
+                        buildCounter: (context, {required currentLength, required isFocused, maxLength}) {
+                          if (maxLength == null || currentLength < maxLength - 80) return null;
+                          return Text(
+                            '$currentLength/$maxLength',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              color: currentLength >= maxLength
+                                  ? const Color(0xFFDC2626)
+                                  : const Color(0xFF94A3B8),
+                            ),
+                          );
+                        },
                         decoration: InputDecoration(
                           hintText: 'Message ${widget.displayName}...',
                           hintStyle: const TextStyle(color: Color(0xFF94A3B8), fontSize: 14),

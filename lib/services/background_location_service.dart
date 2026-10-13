@@ -17,6 +17,8 @@ class BackgroundLocationService {
   static final ValueNotifier<bool> isStreamingActive = ValueNotifier<bool>(false);
 
   static StreamSubscription<Position>? _positionSubscription;
+  static Timer? _heartbeatTimer;
+  static DateTime? _lastFixAt;
 
   /// Loads persisted preference and starts service if user previously enabled it.
   static Future<void> initialize() async {
@@ -98,6 +100,7 @@ class BackgroundLocationService {
       (position) async {
         try {
           await KaSpotService.upsertOwnLocation(position);
+          _lastFixAt = DateTime.now();
         } catch (e) {
           debugPrint('Background location transmission paused (will retry on next fix): $e');
         }
@@ -107,6 +110,19 @@ class BackgroundLocationService {
       },
     );
 
+    // Safety heartbeat: with the 50m distance filter a stationary phone emits
+    // no stream updates, so send one lightweight fix roughly every 10 minutes.
+    // This keeps the member correctly shown as "Live" instead of a false
+    // "App inactive" while background sharing is on. Failures pass through the
+    // pending-location queue and are retried when connectivity returns.
+    _heartbeatTimer = Timer.periodic(const Duration(minutes: 10), (_) {
+      final last = _lastFixAt;
+      if (last != null && DateTime.now().difference(last) < const Duration(minutes: 8)) {
+        return; // A movement update was already reported recently.
+      }
+      unawaited(_sendHeartbeat());
+    });
+
     isStreamingActive.value = true;
     isBackgroundSharingEnabled.value = true;
 
@@ -115,8 +131,27 @@ class BackgroundLocationService {
     }
   }
 
+  /// One lightweight stationary fix, sent by the heartbeat timer.
+  static Future<void> _sendHeartbeat() async {
+    try {
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 30),
+        ),
+      );
+      await KaSpotService.upsertOwnLocation(position);
+      _lastFixAt = DateTime.now();
+      debugPrint('KaSpot heartbeat sent.');
+    } catch (e) {
+      debugPrint('KaSpot heartbeat skipped: $e');
+    }
+  }
+
   /// Stop background stream and dismiss ongoing notification.
   static Future<void> stopBackgroundTracking({bool persist = true}) async {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
     if (_positionSubscription != null) {
       await _positionSubscription!.cancel();
       _positionSubscription = null;

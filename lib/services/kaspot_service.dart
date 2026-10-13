@@ -1,6 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../utils/email_validator.dart';
 
@@ -21,18 +25,91 @@ class AuthResult {
 class KaSpotService {
   KaSpotService._();
   static SupabaseClient? _client;
+
+  /// Deep-link scheme registered in AndroidManifest.xml. Email confirmation and
+  /// password-recovery links return to the app through this URI so the
+  /// Supabase SDK can complete the flow automatically.
+  static const String authRedirectUrl = 'io.supabase.kaspot://login-callback';
+
+  /// Shown whenever a real authenticateable backend is unavailable and the
+  /// development-only local preview is not explicitly enabled.
+  static const String backendUnavailableMessage =
+      'Secure sign-in is unavailable: KaSpot is not connected to its authentication service. Restore the app configuration and try again.';
+
+  /// Shown when someone tries to sign in with a Google account that has never
+  /// completed a KaSpot registration. Signing in must never silently register
+  /// a brand-new account — the user must register through Create Account first.
+  static const String googleNotRegisteredMessage =
+      'This Google account is not registered with KaSpot yet. Tap "Create Account" and continue with Google there to register first.';
+
+  /// True while a Google credential exchange is being gated for registration
+  /// completeness. The auth listener must not activate the app during this
+  /// window, since the fresh session may be dropped right after the check.
+  static bool _googleRegistrationGateActive = false;
+
+  /// Development-only local preview session. It fabricates a local user with no
+  /// server verification and must never be enabled in a release build.
+  static bool _localPreviewEnabled =
+      const bool.fromEnvironment('KASPOT_LOCAL_PREVIEW') ||
+      (dotenv.isInitialized &&
+          dotenv.maybeGet('KASPOT_LOCAL_PREVIEW')?.trim().toLowerCase() == 'true');
+
+  /// Enables/disables the clearly-labelled local preview session (tests/dev).
+  static void enableLocalPreview({bool enabled = true}) {
+    _localPreviewEnabled = enabled;
+  }
+
   static void configure(SupabaseClient client) {
     _client = client;
-    authStateNotifier.value = client.auth.currentUser != null;
+    authStateNotifier.value = _hasVerifiedSession(client.auth.currentSession);
     client.auth.onAuthStateChange.listen((data) async {
-      final hasSession = data.session != null;
-      authStateNotifier.value = hasSession;
-      if (hasSession) {
+      if (data.event == AuthChangeEvent.passwordRecovery) {
+        // A recovery link opens a short-lived session whose only purpose is to
+        // set a new password. It must never be treated as a normal sign-in.
+        passwordRecoveryActive.value = true;
+        return;
+      }
+      if (data.event == AuthChangeEvent.signedOut) {
+        passwordRecoveryActive.value = false;
+      }
+      final user = data.session?.user ?? client.auth.currentUser;
+      // A session alone is never sufficient: the required verification must
+      // have been completed, and an active recovery flow blocks activation.
+      final hasVerifiedSession = data.session != null &&
+          _isVerifiedUser(user) &&
+          !passwordRecoveryActive.value;
+      if (hasVerifiedSession && !_googleRegistrationGateActive) {
+        authStateNotifier.value = true;
         try {
           await ensureProfile();
         } catch (_) {}
+      } else {
+        // Either there is no verified session, or a Google sign-in is still
+        // being checked for registration completeness — the app must stay
+        // locked until that check completes.
+        authStateNotifier.value = false;
+        if (data.session == null) {
+          profileNotifier.value = null;
+        }
       }
     });
+  }
+
+  /// True only when the user has completed the required verification: a
+  /// confirmed email, or a provider-verified identity (e.g. Google). A raw,
+  /// unconfirmed session is never sufficient.
+  static bool _isVerifiedUser(User? user) {
+    if (user == null) return false;
+    if (user.emailConfirmedAt != null) return true;
+    final identities = user.identities;
+    if (identities != null && identities.any((identity) => identity.provider != 'email')) {
+      return true;
+    }
+    return false;
+  }
+
+  static bool _hasVerifiedSession(Session? session) {
+    return session != null && _isVerifiedUser(session.user);
   }
 
   static SupabaseClient? get client => _client;
@@ -41,6 +118,9 @@ class KaSpotService {
   // Real authentication state listenable for clean reactive transitions
   static final ValueNotifier<bool> authStateNotifier = ValueNotifier<bool>(false);
   static final ValueNotifier<Map<String, dynamic>?> profileNotifier = ValueNotifier<Map<String, dynamic>?>(null);
+
+  /// True while a password-recovery deep link has opened a reset session.
+  static final ValueNotifier<bool> passwordRecoveryActive = ValueNotifier<bool>(false);
 
   // Local session state (used when no Supabase backend is configured)
   static Map<String, dynamic>? _localUser;
@@ -60,8 +140,8 @@ class KaSpotService {
   static double? lastUserLongitude;
 
   static bool get isAuthenticated {
-    if (_client != null) return _client!.auth.currentUser != null;
-    return _localUser != null;
+    if (_client != null) return _isVerifiedUser(_client!.auth.currentUser);
+    return _localPreviewEnabled && _localUser != null;
   }
 
   static String get userId {
@@ -80,6 +160,13 @@ class KaSpotService {
 
   /// Returns the current user's short, capitalized Account Code (e.g. "KS-E7BE-D662")
   static String get accountCode => formatAccountCode(userId);
+
+  /// Monotonic suffix so two local-preview sign-ins that land in the same
+  /// millisecond still get distinct ids (widget tests sign in back-to-back).
+  static int _localSessionSeq = 0;
+
+  static String _newLocalUserId() =>
+      'u-${DateTime.now().millisecondsSinceEpoch.toRadixString(16)}${(_localSessionSeq++).toRadixString(16)}';
 
   /// Resolves an entered Account Code (e.g. "KS-E7BE-D662" or "E7BED662") or raw UUID into the target User UUID
   static Future<String> resolveUserId(String input) async {
@@ -139,10 +226,24 @@ class KaSpotService {
   static Future<void> signIn(String email, String password) async {
     final cleanEmail = email.trim().toLowerCase();
     if (_client != null) {
-      await _client!.auth.signInWithPassword(email: cleanEmail, password: password);
+      final response = await _client!.auth.signInWithPassword(email: cleanEmail, password: password);
+      if (!_isVerifiedUser(response.user)) {
+        // Defense-in-depth: never keep a session whose required verification
+        // has not been completed, regardless of project configuration.
+        try {
+          await _client!.auth.signOut();
+        } catch (_) {}
+        throw const AuthException('Email not confirmed');
+      }
       await ensureProfile();
+      // A completed password sign-in proves this account passed through the
+      // register flow; backfill the registration flag for future Google use.
+      await _markRegistrationCompleted(response.user?.id ?? '');
     } else {
-      // Local development session validation
+      if (!_localPreviewEnabled) {
+        throw AuthException(backendUnavailableMessage);
+      }
+      // Local development session validation (preview only)
       if (cleanEmail.isEmpty || !cleanEmail.contains('@')) {
         throw Exception('Please enter a valid email address.');
       }
@@ -152,7 +253,7 @@ class KaSpotService {
       final name = cleanEmail.split('@').first;
       final displayName = name.isNotEmpty ? '${name[0].toUpperCase()}${name.substring(1)}' : 'Member';
       _localUser = {
-        'id': 'u-${DateTime.now().millisecondsSinceEpoch.toRadixString(16)}',
+        'id': _newLocalUserId(),
         'email': cleanEmail,
         'display_name': displayName,
         'created_at': DateTime.now().toUtc().toIso8601String(),
@@ -162,25 +263,147 @@ class KaSpotService {
     }
   }
 
+  /// Exchanges a Google ID token for a Supabase session. Shared by the sign-in
+  /// and registration entry points. Returns the authenticated user plus the
+  /// Google display name, or null when the user dismissed the native picker.
+  static Future<(User, String?)?> _exchangeGoogleCredentials() async {
+    final webClientId = dotenv.maybeGet('GOOGLE_WEB_CLIENT_ID') ??
+        const String.fromEnvironment('GOOGLE_WEB_CLIENT_ID');
+
+    final googleSignIn = GoogleSignIn(
+      serverClientId: webClientId.isNotEmpty ? webClientId : null,
+    );
+
+    final googleUser = await googleSignIn.signIn();
+    if (googleUser == null) {
+      // User dismissed or cancelled the native account selector
+      return null;
+    }
+
+    final googleAuth = await googleUser.authentication;
+    final idToken = googleAuth.idToken;
+    final accessToken = googleAuth.accessToken;
+
+    if (idToken == null) {
+      throw Exception('Google Sign-In failed: No ID token returned from Google.');
+    }
+
+    final response = await _client!.auth.signInWithIdToken(
+      provider: OAuthProvider.google,
+      idToken: idToken,
+      accessToken: accessToken,
+    );
+    final user = response.user ?? _client!.auth.currentUser;
+    if (user == null) {
+      throw Exception('Google Sign-In failed: the session did not include a user.');
+    }
+    return (user, googleUser.displayName);
+  }
+
+  /// Sign-in entry point (Sign In screen). Only accounts that have completed a
+  /// KaSpot registration may enter: Supabase creates a brand-new account on the
+  /// first Google credential exchange, so a never-registered account is signed
+  /// back out immediately with guidance to register — signing in must never
+  /// double as silent registration.
   static Future<void> signInWithGoogle() async {
     if (_client != null) {
-      final isMobile = !kIsWeb &&
-          (defaultTargetPlatform == TargetPlatform.android ||
-              defaultTargetPlatform == TargetPlatform.iOS);
+      _googleRegistrationGateActive = true;
+      try {
+        final exchange = await _exchangeGoogleCredentials();
+        if (exchange == null) return; // picker dismissed
+        final user = exchange.$1;
+        final displayName = exchange.$2;
 
-      await _client!.auth.signInWithOAuth(
-        OAuthProvider.google,
-        redirectTo: isMobile ? 'io.supabase.kaspot://login-callback' : null,
-      );
+        final registered = await _hasCompletedRegistration(user.id);
+        if (!registered) {
+          try {
+            await _client!.auth.signOut();
+          } catch (_) {}
+          throw AuthException(googleNotRegisteredMessage);
+        }
+
+        await ensureProfile(name: displayName);
+        authStateNotifier.value = true;
+      } finally {
+        _googleRegistrationGateActive = false;
+      }
     } else {
-      _localUser = {
-        'id': 'u-${DateTime.now().millisecondsSinceEpoch.toRadixString(16)}',
-        'email': 'googleuser@gmail.com',
-        'display_name': 'Google Member',
-        'created_at': DateTime.now().toUtc().toIso8601String(),
-      };
-      profileNotifier.value = _localUser;
-      authStateNotifier.value = true;
+      _activateLocalGooglePreview();
+    }
+  }
+
+  /// Registration entry point (Create Account screen). The Google account is
+  /// registered here: the server-side flag is written first so that later
+  /// sign-ins of the same account pass the registration gate.
+  static Future<void> registerWithGoogle() async {
+    if (_client != null) {
+      _googleRegistrationGateActive = true;
+      try {
+        final exchange = await _exchangeGoogleCredentials();
+        if (exchange == null) return; // picker dismissed
+        final user = exchange.$1;
+        final displayName = exchange.$2;
+
+        await _markRegistrationCompleted(user.id);
+        await ensureProfile(name: displayName);
+        authStateNotifier.value = true;
+      } finally {
+        _googleRegistrationGateActive = false;
+      }
+    } else {
+      _activateLocalGooglePreview();
+    }
+  }
+
+  static void _activateLocalGooglePreview() {
+    if (!_localPreviewEnabled) {
+      throw AuthException(backendUnavailableMessage);
+    }
+    _localUser = {
+      'id': _newLocalUserId(),
+      'email': 'googleuser@gmail.com',
+      'display_name': 'Google Member',
+      'created_at': DateTime.now().toUtc().toIso8601String(),
+    };
+    profileNotifier.value = _localUser;
+    authStateNotifier.value = true;
+  }
+
+  /// Reads the server-side registration flag. If the flag cannot be read at
+  /// all (e.g. the migration has not been applied yet), the sign-in is allowed
+  /// so that a configuration gap never locks legitimate users out.
+  static Future<bool> _hasCompletedRegistration(String userId) async {
+    if (userId.isEmpty) return false;
+    try {
+      final rows = await _client!
+          .from('profiles')
+          .select('registered_at')
+          .eq('id', userId)
+          .limit(1);
+      if (rows.isEmpty) return false;
+      return rows.first['registered_at'] != null;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  /// Marks the account as registered (idempotent, best-effort bookkeeping).
+  static Future<void> _markRegistrationCompleted(String userId) async {
+    if (userId.isEmpty) return;
+    try {
+      final rows = await _client!
+          .from('profiles')
+          .select('registered_at')
+          .eq('id', userId)
+          .limit(1);
+      if (rows.isNotEmpty && rows.first['registered_at'] != null) return;
+      final nowIso = DateTime.now().toUtc().toIso8601String();
+      await _client!.from('profiles').update({
+        'registered_at': nowIso,
+        'updated_at': nowIso,
+      }).eq('id', userId);
+    } catch (_) {
+      // Best-effort: registration itself must not fail on this bookkeeping.
     }
   }
 
@@ -188,7 +411,7 @@ class KaSpotService {
     final cleanEmail = email.trim().toLowerCase();
     final cleanName = name.trim();
 
-    final validationError = EmailValidator.validate(cleanEmail);
+    final validationError = EmailValidator.validate(cleanEmail, requireGoogleAccount: true);
     if (validationError != null) {
       throw AuthException(validationError);
     }
@@ -197,6 +420,7 @@ class KaSpotService {
       final result = await _client!.auth.signUp(
         email: cleanEmail,
         password: password,
+        emailRedirectTo: authRedirectUrl,
         data: {
           'display_name': cleanName,
           'full_name': cleanName,
@@ -204,7 +428,20 @@ class KaSpotService {
         },
       );
       if (result.session != null) {
+        if (!_isVerifiedUser(result.user)) {
+          // A session without completed verification must not activate the
+          // app; drop it and surface the confirmation-pending state instead.
+          try {
+            await _client!.auth.signOut();
+          } catch (_) {}
+          return AuthResult(
+            isSessionActive: false,
+            requiresEmailConfirmation: true,
+            email: cleanEmail,
+          );
+        }
         await ensureProfile(name: cleanName);
+        await _markRegistrationCompleted(result.user?.id ?? '');
         return AuthResult(isSessionActive: true, email: cleanEmail);
       } else {
         final identities = result.user?.identities;
@@ -218,7 +455,10 @@ class KaSpotService {
         );
       }
     } else {
-      // Local development registration
+      if (!_localPreviewEnabled) {
+        throw AuthException(backendUnavailableMessage);
+      }
+      // Local development registration (preview only)
       if (cleanName.isEmpty) throw Exception('Please enter your name.');
       if (cleanEmail.isEmpty || !cleanEmail.contains('@')) {
         throw Exception('Please enter a valid email address.');
@@ -227,7 +467,7 @@ class KaSpotService {
         throw Exception('Password must be at least 8 characters.');
       }
       _localUser = {
-        'id': 'u-${DateTime.now().millisecondsSinceEpoch.toRadixString(16)}',
+        'id': _newLocalUserId(),
         'email': cleanEmail,
         'display_name': cleanName,
         'created_at': DateTime.now().toUtc().toIso8601String(),
@@ -244,21 +484,55 @@ class KaSpotService {
       await _client!.auth.resend(
         type: OtpType.signup,
         email: cleanEmail,
+        emailRedirectTo: authRedirectUrl,
       );
+    } else if (!_localPreviewEnabled) {
+      throw AuthException(backendUnavailableMessage);
     }
   }
 
   static Future<void> recoverPassword(String email) async {
     if (_client != null) {
-      await _client!.auth.resetPasswordForEmail(email.trim());
+      await _client!.auth.resetPasswordForEmail(
+        email.trim(),
+        redirectTo: authRedirectUrl,
+      );
+    } else if (!_localPreviewEnabled) {
+      throw AuthException(backendUnavailableMessage);
     }
+  }
+
+  /// Completes the password-recovery flow: replaces the password on the
+  /// short-lived recovery session, then closes that session so the user signs
+  /// in again with the new password.
+  static Future<void> updateRecoveredPassword(String newPassword) async {
+    if (_client == null) {
+      throw AuthException(backendUnavailableMessage);
+    }
+    final user = _client!.auth.currentUser;
+    if (user == null) {
+      throw AuthException('Your recovery link has expired. Please request a new password reset email.');
+    }
+    await _client!.auth.updateUser(UserAttributes(password: newPassword));
+    await signOut();
+  }
+
+  /// Abandon the password-recovery flow without changing the password.
+  static Future<void> cancelPasswordRecovery() async {
+    await signOut();
   }
 
   static Future<void> signOut() async {
     if (_client != null) {
+      try {
+        await GoogleSignIn().signOut();
+      } catch (_) {}
       await _client!.auth.signOut();
     }
     _localUser = null;
+    lastUserLatitude = null;
+    lastUserLongitude = null;
+    passwordRecoveryActive.value = false;
     authStateNotifier.value = false;
     profileNotifier.value = null;
   }
@@ -322,9 +596,51 @@ class KaSpotService {
       final rows = await _client!.from('connection_requests').select().or(
             'requester_id.eq.$userId,recipient_id.eq.$userId',
           ).order('created_at', ascending: false);
-      return rows.map((row) => Map<String, dynamic>.from(row)).toList();
+      return _attachCounterpartProfiles(
+          rows.map((row) => Map<String, dynamic>.from(row)).toList());
     }
-    return List<Map<String, dynamic>>.from(_localRequests);
+    return _attachCounterpartProfiles(
+        _localRequests.map((row) => Map<String, dynamic>.from(row)).toList());
+  }
+
+  /// Adds the counterpart's identity (id, display name, avatar, Circle Code)
+  /// to each connection request so the Circle tab can show who is on the other
+  /// side instead of a raw identifier. Request participants may already read
+  /// each other's profiles under the existing RLS policies.
+  static Future<List<Map<String, dynamic>>> _attachCounterpartProfiles(
+      List<Map<String, dynamic>> rows) async {
+    final myId = userId;
+    final counterpartIds = <String>{
+      for (final row in rows)
+        (row['requester_id'] == myId ? row['recipient_id'] : row['requester_id'])
+            as String,
+    };
+    final profilesById = <String, Map<String, dynamic>>{};
+    if (_client != null && counterpartIds.isNotEmpty) {
+      try {
+        final profiles = await _client!
+            .from('profiles')
+            .select('id,display_name,avatar_url')
+            .inFilter('id', counterpartIds.toList());
+        for (final profile in profiles) {
+          profilesById[profile['id'] as String] =
+              Map<String, dynamic>.from(profile);
+        }
+      } catch (_) {}
+    }
+    return rows.map((row) {
+      final counterpartId =
+          (row['requester_id'] == myId ? row['recipient_id'] : row['requester_id'])
+              as String;
+      final profile = profilesById[counterpartId];
+      return {
+        ...row,
+        'counterpart_id': counterpartId,
+        'counterpart_name': profile?['display_name'] as String? ?? 'KaSpot member',
+        'counterpart_avatar': profile?['avatar_url'] as String?,
+        'counterpart_code': formatAccountCode(counterpartId),
+      };
+    }).toList();
   }
 
   static Future<Map<String, String>> circleRelationships() async {
@@ -368,11 +684,41 @@ class KaSpotService {
     final targetId = await resolveUserId(cleanInput);
     if (targetId == userId) throw Exception('You cannot connect to yourself.');
 
+    // Friendly pre-checks: a human explanation beats a raw database error when
+    // the invitation cannot be created.
+    final existingConnections = await connections();
+    if (existingConnections.any((c) => c['other_id'] == targetId)) {
+      throw Exception('You are already connected with this person.');
+    }
+    final pending = await _pendingRequestBetween(targetId);
+    if (pending != null) {
+      if (pending['requester_id'] == userId) {
+        throw Exception('You already sent this person an invitation. Check Sent Invitations.');
+      }
+      throw Exception('This person has already invited you. Check Incoming Requests and accept it there.');
+    }
+
     if (_client != null) {
-      await _client!.from('connection_requests').insert({
-        'requester_id': userId,
-        'recipient_id': targetId,
-      });
+      try {
+        await _client!.from('connection_requests').insert({
+          'requester_id': userId,
+          'recipient_id': targetId,
+        });
+      } on PostgrestException catch (e) {
+        // A race can slip past the pre-checks; map the database outcome to the
+        // same human wording instead of surfacing PostgREST internals.
+        if (e.code == '23505') {
+          final raced = await _pendingRequestBetween(targetId);
+          if (raced != null && raced['requester_id'] == userId) {
+            throw Exception('You already sent this person an invitation. Check Sent Invitations.');
+          }
+          throw Exception('This person has already invited you. Check Incoming Requests and accept it there.');
+        }
+        if (e.code == '42501') {
+          throw Exception('You are already connected with this person.');
+        }
+        throw Exception('Could not send the invitation. Please try again.');
+      }
     } else {
       _localRequests.insert(0, {
         'id': 'req-${DateTime.now().millisecondsSinceEpoch}',
@@ -383,6 +729,47 @@ class KaSpotService {
       });
     }
     await setCircleRelationship(targetId, relationship);
+  }
+
+  /// Cancels a pending invitation I sent. The database policy lets the
+  /// requester move a pending request to 'cancelled' (never to 'accepted'),
+  /// so consent always stays with the recipient.
+  static Future<void> cancelRequest(String requestId) async {
+    if (_client != null) {
+      await _client!
+          .from('connection_requests')
+          .update({'status': 'cancelled'}).eq('id', requestId);
+      return;
+    }
+    final index = _localRequests.indexWhere((r) => r['id'] == requestId);
+    if (index != -1) {
+      _localRequests[index]['status'] = 'cancelled';
+    }
+  }
+
+  /// Returns the pending request between me and [targetId] in either
+  /// direction, or null when none exists.
+  static Future<Map<String, dynamic>?> _pendingRequestBetween(String targetId) async {
+    if (_client != null) {
+      try {
+        final rows = await _client!
+            .from('connection_requests')
+            .select()
+            .or('and(requester_id.eq.$userId,recipient_id.eq.$targetId),'
+                'and(requester_id.eq.$targetId,recipient_id.eq.$userId)')
+            .eq('status', 'pending');
+        if (rows.isNotEmpty) return Map<String, dynamic>.from(rows.first);
+      } catch (_) {}
+      return null;
+    }
+    for (final request in _localRequests) {
+      final samePair = (request['requester_id'] == userId &&
+              request['recipient_id'] == targetId) ||
+          (request['requester_id'] == targetId &&
+              request['recipient_id'] == userId);
+      if (samePair && request['status'] == 'pending') return request;
+    }
+    return null;
   }
 
   static Future<void> respondToRequest(String requestId, String status) async {
@@ -512,18 +899,125 @@ class KaSpotService {
     return _localSharingGrants.values.any((enabled) => enabled);
   }
 
-  static Future<void> upsertOwnLocation(Position position) async {
-    lastUserLatitude = position.latitude;
-    lastUserLongitude = position.longitude;
-    if (!await anySharingEnabled()) return;
+  /// Key under which the single latest un-uploaded location fix is stored when
+  /// the phone has no connectivity. Zero-trail: only ever one point is kept.
+  static const String _pendingFixKey = 'kaspot_pending_fix';
+
+  /// Test-only upload hook: when set, the real network upload is replaced by
+  /// this function so offline behavior can be unit-tested deterministically.
+  @visibleForTesting
+  static Future<void> Function(double latitude, double longitude)? debugUploadOverride;
+
+  static Future<void> upsertOwnLocation(Position position) {
+    return upsertOwnLocationAt(position.latitude, position.longitude);
+  }
+
+  /// Uploads the user's latest coordinate. When the phone is offline the fix
+  /// is queued (overwriting any older pending point) and re-sent automatically
+  /// by [flushPendingLocation] as soon as connectivity returns.
+  static Future<void> upsertOwnLocationAt(double latitude, double longitude) async {
+    lastUserLatitude = latitude;
+    lastUserLongitude = longitude;
+    try {
+      if (!await anySharingEnabled()) {
+        // Sharing is off: zero-trail means nothing may remain queued either.
+        await clearPendingLocation();
+        return;
+      }
+      await _uploadLocation(latitude, longitude, DateTime.now().toUtc());
+      await clearPendingLocation();
+    } catch (_) {
+      // No usable connection (or backend unreachable): keep the latest fix so
+      // it can be sent the moment connectivity returns.
+      await _savePendingLocation(latitude, longitude);
+      rethrow;
+    }
+  }
+
+  /// Sends a queued fix (if any) left over from an offline period. Safe to
+  /// call any time; silently keeps the fix queued when the upload still fails.
+  static Future<void> flushPendingLocation() async {
+    final SharedPreferences prefs;
+    try {
+      prefs = await SharedPreferences.getInstance();
+    } catch (_) {
+      return;
+    }
+    final raw = prefs.getString(_pendingFixKey);
+    if (raw == null) return;
+
+    Map<String, dynamic> data;
+    try {
+      data = jsonDecode(raw) as Map<String, dynamic>;
+    } catch (_) {
+      await prefs.remove(_pendingFixKey);
+      return;
+    }
+
+    // Never upload a fix that belongs to a different account (e.g. after an
+    // account switch on the same device). An empty id means nobody is signed
+    // in yet; keep the fix until the rightful owner is back.
+    if (userId.isEmpty || data['uid'] != userId) return;
+
+    final latitude = (data['lat'] as num?)?.toDouble();
+    final longitude = (data['lon'] as num?)?.toDouble();
+    if (latitude == null || longitude == null) {
+      await prefs.remove(_pendingFixKey);
+      return;
+    }
+
+    try {
+      if (!await anySharingEnabled()) {
+        // Now that we are back online we can see sharing was revoked while
+        // offline — the queued point must not be uploaded (zero-trail).
+        await clearPendingLocation();
+        return;
+      }
+      final recordedAt = DateTime.tryParse(data['at'] as String? ?? '')?.toUtc() ?? DateTime.now().toUtc();
+      await _uploadLocation(latitude, longitude, recordedAt);
+      await clearPendingLocation();
+      debugPrint('KaSpot pending location synced after reconnect.');
+    } catch (e) {
+      debugPrint('KaSpot pending location still offline: $e');
+    }
+  }
+
+  static Future<void> _uploadLocation(double latitude, double longitude, DateTime recordedAt) async {
+    final override = debugUploadOverride;
+    if (override != null) {
+      await override(latitude, longitude);
+      return;
+    }
     if (_client != null) {
       await _client!.from('locations').upsert({
         'user_id': userId,
-        'latitude': position.latitude,
-        'longitude': position.longitude,
-        'recorded_at': DateTime.now().toUtc().toIso8601String(),
+        'latitude': latitude,
+        'longitude': longitude,
+        'recorded_at': recordedAt.toIso8601String(),
       }, onConflict: 'user_id');
     }
+  }
+
+  static Future<void> _savePendingLocation(double latitude, double longitude) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        _pendingFixKey,
+        jsonEncode({
+          'lat': latitude,
+          'lon': longitude,
+          'at': DateTime.now().toUtc().toIso8601String(),
+          'uid': userId,
+        }),
+      );
+    } catch (_) {}
+  }
+
+  static Future<void> clearPendingLocation() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_pendingFixKey);
+    } catch (_) {}
   }
 
   static Future<void> _removeLocationIfNoActiveGrants() async {
@@ -625,18 +1119,10 @@ class KaSpotService {
 
   static Future<List<Map<String, dynamic>>> getCircleMessages(String otherUserId) async {
     if (_client != null) {
-      try {
-        final rows = await _client!.from('circle_messages').select().or(
-          'and(sender_id.eq.$userId,recipient_id.eq.$otherUserId),and(sender_id.eq.$otherUserId,recipient_id.eq.$userId)',
-        ).order('created_at', ascending: true);
-        return rows.map((r) => Map<String, dynamic>.from(r)).toList();
-      } catch (_) {
-        return _localMessages
-            .where((m) =>
-                (m['sender_id'] == userId && m['recipient_id'] == otherUserId) ||
-                (m['sender_id'] == otherUserId && m['recipient_id'] == userId))
-            .toList();
-      }
+      final rows = await _client!.from('circle_messages').select().or(
+        'and(sender_id.eq.$userId,recipient_id.eq.$otherUserId),and(sender_id.eq.$otherUserId,recipient_id.eq.$userId)',
+      ).order('created_at', ascending: true);
+      return rows.map((r) => Map<String, dynamic>.from(r)).toList();
     }
     return _localMessages
         .where((m) =>
@@ -649,33 +1135,27 @@ class KaSpotService {
     final cleanContent = content.trim();
     if (cleanContent.isEmpty) throw Exception('Message cannot be empty.');
     if (recipientId == userId) throw Exception('You cannot message yourself.');
+    if (cleanContent.length > 500) {
+      throw Exception('Message is too long (max 500 characters).');
+    }
 
     if (_client != null) {
-      try {
-        await _client!.from('circle_messages').insert({
-          'sender_id': userId,
-          'recipient_id': recipientId,
-          'content': cleanContent,
-        });
-        return;
-      } catch (_) {
-        _localMessages.add({
-          'id': 'msg-${DateTime.now().millisecondsSinceEpoch}',
-          'sender_id': userId,
-          'recipient_id': recipientId,
-          'content': cleanContent,
-          'created_at': DateTime.now().toUtc().toIso8601String(),
-        });
-        return;
-      }
-    } else {
-      _localMessages.add({
-        'id': 'msg-${DateTime.now().millisecondsSinceEpoch}',
+      // Failures (e.g. the connection was just removed) must surface to the
+      // user: silently storing the message locally would fake a delivery the
+      // other member never receives.
+      await _client!.from('circle_messages').insert({
         'sender_id': userId,
         'recipient_id': recipientId,
         'content': cleanContent,
-        'created_at': DateTime.now().toUtc().toIso8601String(),
       });
+      return;
     }
+    _localMessages.add({
+      'id': 'msg-${DateTime.now().millisecondsSinceEpoch}',
+      'sender_id': userId,
+      'recipient_id': recipientId,
+      'content': cleanContent,
+      'created_at': DateTime.now().toUtc().toIso8601String(),
+    });
   }
 }

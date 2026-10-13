@@ -7,6 +7,9 @@ plugins {
 android {
     namespace = "com.kaspot.kaspot"
     compileSdk = flutter.compileSdkVersion
+    // Pinned to the NDK version this Flutter SDK expects. Required so AGP can
+    // strip native debug symbols (libflutter.so) in release builds — without it
+    // each APK is ~170 MB instead of ~20 MB.
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

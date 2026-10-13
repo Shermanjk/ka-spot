@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../widgets/circle_trust_illustration.dart';
 import '../widgets/kaspot_logo.dart';
 import 'register_screen.dart';
@@ -13,27 +14,35 @@ class WelcomeScreen extends StatelessWidget {
     final size = MediaQuery.of(context).size;
     final isSmallScreen = size.height < 700;
 
-    return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              Color(0xFFE8F4FE), // Soft morning sky glow
-              Color(0xFFFFFFFF), // Radiant white center
-              Color(0xFFF1F9FE), // Soft ambient bottom wave
-            ],
-            stops: [0.0, 0.45, 1.0],
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.dark,
+        statusBarBrightness: Brightness.light,
+        systemNavigationBarColor: Colors.white,
+        systemNavigationBarIconBrightness: Brightness.dark,
+      ),
+      child: Scaffold(
+        body: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                Color(0xFFE8F4FE), // Soft morning sky glow
+                Color(0xFFFFFFFF), // Radiant white center
+                Color(0xFFF1F9FE), // Soft ambient bottom wave
+              ],
+              stops: [0.0, 0.45, 1.0],
+            ),
           ),
-        ),
-        child: SafeArea(
-          child: Center(
-            child: SingleChildScrollView(
-              padding: EdgeInsets.symmetric(
-                horizontal: 24,
-                vertical: isSmallScreen ? 12 : 20,
-              ),
+          child: SafeArea(
+            child: Center(
+              child: SingleChildScrollView(
+                padding: EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: isSmallScreen ? 14 : 24,
+                ),
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 440),
                 child: Column(
@@ -42,14 +51,14 @@ class WelcomeScreen extends StatelessWidget {
                   children: [
                     // 1. Hero 3D Perspective Globe & KaSpot Location Beacon Illustration
                     CircleTrustIllustration(
-                      height: isSmallScreen ? 180 : 230,
+                      height: isSmallScreen ? 160 : 200,
                     ),
 
-                    SizedBox(height: isSmallScreen ? 10 : 16),
+                    SizedBox(height: isSmallScreen ? 16 : 24),
 
                     // 2. Official Brand Logo & Tagline
                     KaSpotLogo(
-                      fontSize: isSmallScreen ? 34 : 40,
+                      fontSize: isSmallScreen ? 34 : 38,
                       showTagline: true,
                       tagline: 'Stay connected. Wherever life takes you.',
                       crossAxisAlignment: CrossAxisAlignment.center,
@@ -203,6 +212,7 @@ class WelcomeScreen extends StatelessWidget {
           ),
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 }

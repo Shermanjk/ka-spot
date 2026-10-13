@@ -1,5 +1,7 @@
 -- KaSpot v1. Latest location only; no historical location trail.
 -- Apply using the Supabase SQL editor or Supabase CLI migrations.
+-- Safe to re-run: every statement is idempotent, so applying this script to
+-- an existing database upgrades it in place without resetting any data.
 begin;
 
 create extension if not exists pgcrypto with schema extensions;
@@ -9,7 +11,11 @@ create table if not exists public.profiles (
   display_name text not null default 'KaSpot Member' check (char_length(display_name) between 1 and 80),
   avatar_url text,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  -- Set when the account owner completes KaSpot registration (Google register
+  -- flow or first verified password sign-in). Google sign-in without this flag
+  -- is rejected so that signing in never doubles as silent registration.
+  registered_at timestamptz
 );
 
 create table if not exists public.connection_requests (
@@ -165,6 +171,7 @@ alter table public.saved_places enable row level security;
 alter table public.notification_preferences enable row level security;
 
 -- A connected person or connection request participant can see published profile fields.
+drop policy if exists profile_self_or_connection_read on public.profiles;
 create policy profile_self_or_connection_read on public.profiles for select to authenticated
 using (
   id = (select auth.uid())
@@ -175,62 +182,89 @@ using (
        or (r.recipient_id = profiles.id and r.requester_id = (select auth.uid()))
   )
 );
+drop policy if exists profile_self_insert on public.profiles;
 create policy profile_self_insert on public.profiles for insert to authenticated
 with check (id = (select auth.uid()));
+drop policy if exists profile_self_update on public.profiles;
 create policy profile_self_update on public.profiles for update to authenticated
 using (id = (select auth.uid())) with check (id = (select auth.uid()));
 
+drop policy if exists requests_participant_read on public.connection_requests;
 create policy requests_participant_read on public.connection_requests for select to authenticated
 using (requester_id = (select auth.uid()) or recipient_id = (select auth.uid()));
+drop policy if exists requests_requester_create on public.connection_requests;
 create policy requests_requester_create on public.connection_requests for insert to authenticated
 with check (requester_id = (select auth.uid()) and requester_id <> recipient_id
   and not public.is_accepted_connection(requester_id, recipient_id));
+drop policy if exists requests_participant_transition on public.connection_requests;
 create policy requests_participant_transition on public.connection_requests for update to authenticated
 using ((requester_id = (select auth.uid()) or recipient_id = (select auth.uid())) and status = 'pending')
-with check ((requester_id = (select auth.uid()) or recipient_id = (select auth.uid())));
+with check (
+  (requester_id = (select auth.uid()) or recipient_id = (select auth.uid()))
+  and (
+    -- The recipient decides the outcome: accept or decline.
+    (status in ('accepted', 'rejected') and recipient_id = (select auth.uid()))
+    -- The requester may only withdraw their own pending invitation; consent
+    -- can never be granted by the side that asked for the connection.
+    or (status = 'cancelled' and requester_id = (select auth.uid()))
+  )
+);
 
+drop policy if exists connections_participant_read on public.connections;
 create policy connections_participant_read on public.connections for select to authenticated
 using (user_a_id = (select auth.uid()) or user_b_id = (select auth.uid()));
+drop policy if exists connections_participant_remove on public.connections;
 create policy connections_participant_remove on public.connections for delete to authenticated
 using (user_a_id = (select auth.uid()) or user_b_id = (select auth.uid()));
 -- Connection rows are created only by the trusted acceptance trigger. Removing
 -- a connection deletes both directional grants before the transaction commits.
 
+drop policy if exists sharing_owner_or_recipient_read on public.location_sharing;
 create policy sharing_owner_or_recipient_read on public.location_sharing for select to authenticated
 using (owner_id = (select auth.uid()) or recipient_id = (select auth.uid()));
+drop policy if exists sharing_owner_create on public.location_sharing;
 create policy sharing_owner_create on public.location_sharing for insert to authenticated
 with check (owner_id = (select auth.uid()) and public.is_accepted_connection(owner_id, recipient_id));
+drop policy if exists sharing_owner_update on public.location_sharing;
 create policy sharing_owner_update on public.location_sharing for update to authenticated
 using (owner_id = (select auth.uid()))
 with check (owner_id = (select auth.uid()) and public.is_accepted_connection(owner_id, recipient_id));
+drop policy if exists sharing_owner_delete on public.location_sharing;
 create policy sharing_owner_delete on public.location_sharing for delete to authenticated
 using (owner_id = (select auth.uid()));
 
 -- A user writes only their own latest location. A recipient reads only while
 -- the owner has an enabled per-recipient sharing grant and the connection exists.
+drop policy if exists locations_owner_upsert on public.locations;
 create policy locations_owner_upsert on public.locations for insert to authenticated
 with check (user_id = (select auth.uid()) and exists (
   select 1 from public.location_sharing s where s.owner_id = (select auth.uid()) and s.is_enabled
 ));
+drop policy if exists locations_owner_refresh on public.locations;
 create policy locations_owner_refresh on public.locations for update to authenticated
 using (user_id = (select auth.uid()))
 with check (user_id = (select auth.uid()) and exists (
   select 1 from public.location_sharing s where s.owner_id = (select auth.uid()) and s.is_enabled
 ));
+drop policy if exists locations_authorized_read on public.locations;
 create policy locations_authorized_read on public.locations for select to authenticated
 using (user_id = (select auth.uid()) or exists (
   select 1 from public.location_sharing s
   where s.owner_id = locations.user_id and s.recipient_id = (select auth.uid())
     and s.is_enabled and public.is_accepted_connection(s.owner_id, s.recipient_id)
 ));
+drop policy if exists locations_owner_delete on public.locations;
 create policy locations_owner_delete on public.locations for delete to authenticated
 using (user_id = (select auth.uid()));
 
+drop policy if exists saved_places_owner_all on public.saved_places;
 create policy saved_places_owner_all on public.saved_places for all to authenticated
 using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
+drop policy if exists notification_preferences_owner_all on public.notification_preferences;
 create policy notification_preferences_owner_all on public.notification_preferences for all to authenticated
 using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
 alter table public.circle_relationships enable row level security;
+drop policy if exists circle_relationships_owner on public.circle_relationships;
 create policy circle_relationships_owner on public.circle_relationships for all to authenticated
 using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
 
@@ -258,12 +292,14 @@ create table if not exists public.circle_messages (
 
 alter table public.circle_messages enable row level security;
 
+drop policy if exists circle_messages_participant_read on public.circle_messages;
 create policy circle_messages_participant_read on public.circle_messages for select to authenticated
 using (
   (sender_id = (select auth.uid()) or recipient_id = (select auth.uid()))
   and public.is_accepted_connection(sender_id, recipient_id)
 );
 
+drop policy if exists circle_messages_sender_create on public.circle_messages;
 create policy circle_messages_sender_create on public.circle_messages for insert to authenticated
 with check (
   sender_id = (select auth.uid())
@@ -353,3 +389,24 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
 commit;
+
+-- Migration for existing databases that predate the registration flag
+-- (idempotent — safe to run once in the Supabase SQL editor):
+--   alter table public.profiles add column if not exists registered_at timestamptz;
+--   update public.profiles set registered_at = coalesce(created_at, now())
+--   where registered_at is null;
+
+-- Migration for existing databases that predate the role-restricted request
+-- transitions (idempotent — safe to run once in the Supabase SQL editor).
+-- Without it, the original policy let a requester move their own pending
+-- request straight to 'accepted', bypassing the recipient's consent:
+--   drop policy if exists requests_participant_transition on public.connection_requests;
+--   create policy requests_participant_transition on public.connection_requests for update to authenticated
+--   using ((requester_id = (select auth.uid()) or recipient_id = (select auth.uid())) and status = 'pending')
+--   with check (
+--     (requester_id = (select auth.uid()) or recipient_id = (select auth.uid()))
+--     and (
+--       (status in ('accepted', 'rejected') and recipient_id = (select auth.uid()))
+--       or (status = 'cancelled' and requester_id = (select auth.uid()))
+--     )
+--   );

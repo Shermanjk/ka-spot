@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/kaspot_service.dart';
+import '../utils/auth_error_formatter.dart';
 import '../widgets/kaspot_logo.dart';
 
 /// Password recovery screen allowing users to request a password reset email.
@@ -43,7 +44,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+        setState(() => _error = AuthErrorFormatter.format(e));
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -123,7 +124,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                   ),
                   child: Row(
                     children: [
-                      const Icon(Icons.info_outline_rounded, color: Color(0xFFDC2626), size: 18),
+                      const Icon(Icons.error_outline_rounded, color: Color(0xFFDC2626), size: 18),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -140,6 +141,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                 controller: _email,
                 keyboardType: TextInputType.emailAddress,
                 autocorrect: false,
+                autovalidateMode: AutovalidateMode.disabled,
                 onChanged: (_) {
                   if (_error != null) setState(() => _error = null);
                 },

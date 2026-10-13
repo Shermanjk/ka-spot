@@ -64,3 +64,5 @@ assets/logos/logo_*.svg
 
 Supabase Pass.txt
 client_secret*.json
+*client_secret*.json
+*.apps.googleusercontent.com.json

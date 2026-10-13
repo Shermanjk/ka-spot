@@ -1,15 +1,30 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'screens/home_shell.dart';
+import 'screens/update_password_screen.dart';
 import 'screens/welcome_screen.dart';
 import 'services/background_location_service.dart';
+import 'services/connectivity_service.dart';
 import 'services/kaspot_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Enforce visible dark status bar icons on light application background
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: Brightness.dark,
+      statusBarBrightness: Brightness.light,
+      systemNavigationBarColor: Colors.white,
+      systemNavigationBarIconBrightness: Brightness.dark,
+    ),
+  );
+
   try {
     await dotenv.load(fileName: '.env');
   } catch (_) {
@@ -25,6 +40,10 @@ Future<void> main() async {
     await Supabase.initialize(url: url, publishableKey: anonKey);
     KaSpotService.configure(Supabase.instance.client);
   }
+  await ConnectivityService.initialize();
+  // Send any location fix that was queued while the phone was offline before
+  // the app was last closed.
+  unawaited(KaSpotService.flushPendingLocation());
   unawaited(BackgroundLocationService.initialize());
   runApp(const KaSpotApp());
 }
@@ -46,6 +65,7 @@ class KaSpotApp extends StatefulWidget {
 
 class _KaSpotAppState extends State<KaSpotApp> {
   final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+  bool _recoveryScreenShown = false;
 
   static const ocean = KaSpotApp.ocean;
   static const slateBg = KaSpotApp.slateBg;
@@ -55,18 +75,43 @@ class _KaSpotAppState extends State<KaSpotApp> {
   void initState() {
     super.initState();
     KaSpotService.authStateNotifier.addListener(_onAuthChanged);
+    KaSpotService.passwordRecoveryActive.addListener(_onRecoveryStateChanged);
   }
 
   @override
   void dispose() {
     KaSpotService.authStateNotifier.removeListener(_onAuthChanged);
+    KaSpotService.passwordRecoveryActive.removeListener(_onRecoveryStateChanged);
     super.dispose();
   }
 
   void _onAuthChanged() {
+    if (!KaSpotService.authStateNotifier.value) {
+      // A signed-out or unverified state must never keep streaming location.
+      unawaited(BackgroundLocationService.stopBackgroundTracking(persist: false));
+    } else {
+      // A fix queued while signed out (or offline) can now be safely
+      // attributed to the signed-in account and sent.
+      unawaited(KaSpotService.flushPendingLocation());
+    }
     // Whenever authentication state changes (sign in, sign out, session restore),
     // pop all pushed auth routes back to root so HomeShell or WelcomeScreen is cleanly displayed.
     _navigatorKey.currentState?.popUntil((route) => route.isFirst);
+  }
+
+  void _onRecoveryStateChanged() {
+    if (KaSpotService.passwordRecoveryActive.value) {
+      if (!_recoveryScreenShown) {
+        _recoveryScreenShown = true;
+        // A recovery deep link grants a password-reset session only; never
+        // route it into the authenticated shell.
+        _navigatorKey.currentState?.push(
+          MaterialPageRoute(builder: (_) => const UpdatePasswordScreen()),
+        );
+      }
+    } else {
+      _recoveryScreenShown = false;
+    }
   }
 
   @override
@@ -92,6 +137,14 @@ class _KaSpotAppState extends State<KaSpotApp> {
           elevation: 0,
           scrolledUnderElevation: 0,
           centerTitle: false,
+          toolbarHeight: 58,
+          systemOverlayStyle: SystemUiOverlayStyle(
+            statusBarColor: Colors.transparent,
+            statusBarIconBrightness: Brightness.dark,
+            statusBarBrightness: Brightness.light,
+            systemNavigationBarColor: Colors.white,
+            systemNavigationBarIconBrightness: Brightness.dark,
+          ),
           titleTextStyle: TextStyle(
             fontSize: 22,
             fontWeight: FontWeight.w800,

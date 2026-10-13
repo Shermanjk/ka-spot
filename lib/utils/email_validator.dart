@@ -42,6 +42,13 @@ class EmailValidator {
     'mytemp.email',
     'mytempemail.com',
     'fakeemail.com',
+    'mailsac.com',
+    'tempmailo.com',
+    'emailondeck.com',
+    'disposablemail.com',
+    'inboxkitten.com',
+    'dropmail.me',
+    'tempmailaddress.com',
   };
 
   /// Common domain typo suggestions
@@ -62,7 +69,8 @@ class EmailValidator {
   /// Validates an email address.
   ///
   /// Returns `null` if the email is valid, or a descriptive error message if invalid.
-  static String? validate(String? value) {
+  /// Set [requireGoogleAccount] to true to enforce @gmail.com or @googlemail.com accounts.
+  static String? validate(String? value, {bool requireGoogleAccount = false}) {
     if (value == null || value.trim().isEmpty) {
       return 'Enter your email address.';
     }
@@ -115,7 +123,12 @@ class EmailValidator {
 
     // Filter out disposable / burner domains
     if (disposableDomains.contains(domain)) {
-      return 'Temporary or disposable email addresses are not permitted.';
+      return 'Temporary or disposable email addresses are strictly prohibited. Please use a verified Google account.';
+    }
+
+    // Enforce Google account requirement if requested
+    if (requireGoogleAccount && domain != 'gmail.com' && domain != 'googlemail.com') {
+      return 'Only verified Google accounts (@gmail.com) are supported.';
     }
 
     // Google / Gmail specific validation rules

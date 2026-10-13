@@ -6,6 +6,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/background_location_service.dart';
+import '../services/connectivity_service.dart';
 import '../services/in_app_notification_service.dart';
 import '../services/kaspot_service.dart';
 import '../widgets/kaspot_avatar.dart';
@@ -19,6 +20,9 @@ class MapScreen extends StatefulWidget {
   State<MapScreen> createState() => _MapScreenState();
 }
 
+/// Selectable base tile source for the map.
+enum _MapLayerMode { standard, satellite }
+
 class _MapScreenState extends State<MapScreen> with SingleTickerProviderStateMixin {
   final _map = MapController();
   late final AnimationController _syncAnimController;
@@ -27,8 +31,10 @@ class _MapScreenState extends State<MapScreen> with SingleTickerProviderStateMix
   bool _busy = false;
   bool _sharing = false;
   bool _refreshing = false;
+  bool _online = true;
   String _myName = 'You';
   String? _myAvatarUrl;
+  _MapLayerMode _layerMode = _MapLayerMode.standard;
   RealtimeChannel? _channel;
 
   @override
@@ -39,12 +45,25 @@ class _MapScreenState extends State<MapScreen> with SingleTickerProviderStateMix
       duration: const Duration(milliseconds: 700),
     );
     KaSpotService.profileNotifier.addListener(_onProfileUpdated);
+    _online = ConnectivityService.isOnline.value;
+    ConnectivityService.isOnline.addListener(_onConnectivityChanged);
     if (KaSpotService.lastUserLatitude != null && KaSpotService.lastUserLongitude != null) {
       _myPoint = LatLng(KaSpotService.lastUserLatitude!, KaSpotService.lastUserLongitude!);
     }
     _refresh();
     _subscribe();
     _initAutoLocate();
+  }
+
+  /// Connection state drives the offline banner, the status pill and an
+  /// automatic resync so events missed while offline are pulled in.
+  void _onConnectivityChanged() {
+    final online = ConnectivityService.isOnline.value;
+    if (!mounted) return;
+    setState(() => _online = online);
+    if (online) {
+      unawaited(_refresh());
+    }
   }
 
   Future<void> _initAutoLocate() async {
@@ -144,6 +163,7 @@ class _MapScreenState extends State<MapScreen> with SingleTickerProviderStateMix
     _syncAnimController.stop();
     _syncAnimController.dispose();
     KaSpotService.profileNotifier.removeListener(_onProfileUpdated);
+    ConnectivityService.isOnline.removeListener(_onConnectivityChanged);
     final channel = _channel;
     if (channel != null && KaSpotService.isConfigured) {
       unawaited(KaSpotService.client!.removeChannel(channel));
@@ -360,6 +380,142 @@ class _MapScreenState extends State<MapScreen> with SingleTickerProviderStateMix
     );
   }
 
+  void _showMapStyleSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      backgroundColor: Colors.white,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFCBD5E1),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEFF6FF),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.layers_rounded, color: Color(0xFF1E60AA), size: 24),
+                    ),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Map style',
+                            style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: Color(0xFF0F172A)),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            'Choose how the map looks',
+                            style: TextStyle(fontSize: 12.5, color: Color(0xFF64748B)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                _mapStyleOption(
+                  sheetContext: sheetContext,
+                  mode: _MapLayerMode.standard,
+                  icon: Icons.map_rounded,
+                  title: 'Standard Map',
+                  subtitle: 'Street map with labels',
+                ),
+                const SizedBox(height: 10),
+                _mapStyleOption(
+                  sheetContext: sheetContext,
+                  mode: _MapLayerMode.satellite,
+                  icon: Icons.satellite_alt_rounded,
+                  title: 'Satellite',
+                  subtitle: 'Real-world satellite imagery',
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _mapStyleOption({
+    required BuildContext sheetContext,
+    required _MapLayerMode mode,
+    required IconData icon,
+    required String title,
+    required String subtitle,
+  }) {
+    final selected = _layerMode == mode;
+    return InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: () {
+        setState(() => _layerMode = mode);
+        Navigator.pop(sheetContext);
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: selected ? const Color(0xFFEFF6FF) : Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: selected ? const Color(0xFF1E60AA) : const Color(0xFFE2E8F0),
+            width: selected ? 1.6 : 1.2,
+          ),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: selected ? Colors.white : const Color(0xFFF8FAFC),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFE2E8F0)),
+              ),
+              child: Icon(icon, size: 20, color: const Color(0xFF1E60AA)),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w700, color: Color(0xFF0F172A)),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(subtitle, style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+                ],
+              ),
+            ),
+            if (selected)
+              const Icon(Icons.check_circle_rounded, color: Color(0xFF1E60AA), size: 22),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _showSharingOptionsSheet() {
     showModalBottomSheet(
       context: context,
@@ -527,7 +683,9 @@ class _MapScreenState extends State<MapScreen> with SingleTickerProviderStateMix
         ),
       ..._shared.map((item) {
         final recorded = DateTime.tryParse(item['recorded_at'] as String? ?? '')?.toLocal();
-        final stale = recorded == null || DateTime.now().difference(recorded) > const Duration(minutes: 15);
+        // 20 minutes gives the ~10-minute stationary heartbeat safe margin
+        // before a member is flagged as inactive on aggressive OEMs.
+        final stale = recorded == null || DateTime.now().difference(recorded) > const Duration(minutes: 20);
         final name = (item['display_name'] as String? ?? 'Friend').split(' ').first;
         final point = LatLng(
           (item['latitude'] as num).toDouble(),
@@ -565,10 +723,22 @@ class _MapScreenState extends State<MapScreen> with SingleTickerProviderStateMix
               initialZoom: _myPoint != null || KaSpotService.lastUserLatitude != null ? 16.0 : 13.0,
               minZoom: 2,
               maxZoom: 18,
+              // North-locked, calm map: no two-finger twist rotation, no glide
+              // after release, no two-finger pan while pinching. Single-finger
+              // drag, pinch zoom and double-tap zooms remain available.
+              interactionOptions: const InteractionOptions(
+                flags: InteractiveFlag.all &
+                    ~InteractiveFlag.rotate &
+                    ~InteractiveFlag.flingAnimation &
+                    ~InteractiveFlag.pinchMove,
+              ),
             ),
             children: [
               TileLayer(
-                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                key: ValueKey('map-layer-${_layerMode.name}'),
+                urlTemplate: _layerMode == _MapLayerMode.satellite
+                    ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+                    : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 userAgentPackageName: 'com.kaspot.kaspot',
               ),
               if (markers.isNotEmpty) MarkerLayer(markers: markers),
@@ -580,157 +750,212 @@ class _MapScreenState extends State<MapScreen> with SingleTickerProviderStateMix
             top: 0,
             left: 0,
             right: 0,
-            child: Container(
-              color: Colors.white,
-              child: SafeArea(
-                bottom: false,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  decoration: const BoxDecoration(
-                    color: Colors.white,
-                    border: Border(
-                      bottom: BorderSide(color: Color(0xFFE2E8F0), width: 1),
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Color(0x08000000),
-                        blurRadius: 8,
-                        offset: Offset(0, 2),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(
+                  color: Colors.white,
+                  child: SafeArea(
+                    bottom: false,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      decoration: const BoxDecoration(
+                        color: Colors.white,
+                        border: Border(
+                          bottom: BorderSide(color: Color(0xFFE2E8F0), width: 1),
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Color(0x08000000),
+                            blurRadius: 8,
+                            offset: Offset(0, 2),
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
-                  child: Row(
-                    children: [
-                      // Official KaSpot Brand Wordmark
-                      const KaSpotWordmark(fontSize: 21),
-                      const Spacer(),
+                      child: Row(
+                        children: [
+                          // Official KaSpot Brand Wordmark
+                          const KaSpotWordmark(fontSize: 21),
+                          const Spacer(),
 
-                      // Option A: Unified Modern Control Capsule
-                      ValueListenableBuilder<bool>(
-                        valueListenable: BackgroundLocationService.isBackgroundSharingEnabled,
-                        builder: (context, bgActive, _) {
-                          final isLive = _sharing;
-                          final dotColor = isLive
-                              ? const Color(0xFF10B981)
-                              : const Color(0xFF94A3B8);
-                          final statusText = isLive
-                              ? (bgActive ? 'Live · Bg' : 'Live')
-                              : 'Paused';
-                          final textColor = isLive
-                              ? const Color(0xFF065F46)
-                              : const Color(0xFF475569);
-                          final capsuleBg = isLive
-                              ? const Color(0xFFECFDF5)
-                              : const Color(0xFFF8FAFC);
-                          final capsuleBorder = isLive
-                              ? const Color(0xFFA7F3D0)
-                              : const Color(0xFFCBD5E1);
+                          // Option A: Unified Modern Control Capsule
+                          ValueListenableBuilder<bool>(
+                            valueListenable: BackgroundLocationService.isBackgroundSharingEnabled,
+                            builder: (context, bgActive, _) {
+                              final isLive = _sharing;
+                              final isOnline = _online;
+                              final dotColor = !isOnline
+                                  ? const Color(0xFFD97706)
+                                  : isLive
+                                      ? const Color(0xFF10B981)
+                                      : const Color(0xFF94A3B8);
+                              final statusText = !isOnline
+                                  ? 'Offline'
+                                  : isLive
+                                      ? (bgActive ? 'Live · Bg' : 'Live')
+                                      : 'Paused';
+                              final textColor = !isOnline
+                                  ? const Color(0xFF92400E)
+                                  : isLive
+                                      ? const Color(0xFF065F46)
+                                      : const Color(0xFF475569);
+                              final capsuleBg = !isOnline
+                                  ? const Color(0xFFFFFBEB)
+                                  : isLive
+                                      ? const Color(0xFFECFDF5)
+                                      : const Color(0xFFF8FAFC);
+                              final capsuleBorder = !isOnline
+                                  ? const Color(0xFFFDE68A)
+                                  : isLive
+                                      ? const Color(0xFFA7F3D0)
+                                      : const Color(0xFFCBD5E1);
 
-                          return Container(
-                            decoration: BoxDecoration(
-                              color: capsuleBg,
-                              borderRadius: BorderRadius.circular(20),
-                              border: Border.all(color: capsuleBorder, width: 1.2),
-                              boxShadow: const [
-                                BoxShadow(
-                                  color: Color(0x06000000),
-                                  blurRadius: 4,
-                                  offset: Offset(0, 1),
-                                ),
-                              ],
-                            ),
-                            child: Material(
-                              color: Colors.transparent,
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  // Status trigger (1-tap toggle or long-press options)
-                                  InkWell(
-                                    borderRadius: const BorderRadius.horizontal(left: Radius.circular(20)),
-                                    onTap: _busy ? null : () => _toggleSharing(!_sharing),
-                                    onLongPress: _showSharingOptionsSheet,
-                                    child: Padding(
-                                      padding: const EdgeInsets.fromLTRB(10, 6, 8, 6),
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Container(
-                                            width: 8,
-                                            height: 8,
-                                            decoration: BoxDecoration(
-                                              shape: BoxShape.circle,
-                                              color: dotColor,
-                                              boxShadow: isLive
-                                                  ? [
-                                                      BoxShadow(
-                                                        color: dotColor.withValues(alpha: 0.45),
-                                                        blurRadius: 5,
-                                                        spreadRadius: 1,
-                                                      ),
-                                                    ]
-                                                  : null,
-                                            ),
-                                          ),
-                                          const SizedBox(width: 6),
-                                          Text(
-                                            statusText,
-                                            style: TextStyle(
-                                              fontSize: 12.5,
-                                              fontWeight: FontWeight.w800,
-                                              color: textColor,
-                                              letterSpacing: 0.1,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
+                              return Container(
+                                decoration: BoxDecoration(
+                                  color: capsuleBg,
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(color: capsuleBorder, width: 1.2),
+                                  boxShadow: const [
+                                    BoxShadow(
+                                      color: Color(0x06000000),
+                                      blurRadius: 4,
+                                      offset: Offset(0, 1),
                                     ),
-                                  ),
-
-                                  // Subtle vertical hairline divider inside capsule
-                                  Container(
-                                    width: 1,
-                                    height: 16,
-                                    color: isLive ? const Color(0xFFA7F3D0) : const Color(0xFFE2E8F0),
-                                  ),
-
-                                  // Animated sync button
-                                  Tooltip(
-                                    message: 'Sync location data',
-                                    child: InkWell(
-                                      borderRadius: const BorderRadius.horizontal(right: Radius.circular(20)),
-                                      onTap: _busy || _refreshing ? null : _refresh,
-                                      child: Padding(
-                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                                        child: RotationTransition(
-                                          turns: _syncAnimController,
-                                          child: Icon(
-                                            Icons.sync_rounded,
-                                            size: 17,
-                                            color: isLive ? const Color(0xFF059669) : const Color(0xFF64748B),
+                                  ],
+                                ),
+                                child: Material(
+                                  color: Colors.transparent,
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      // Status trigger (1-tap toggle or long-press options)
+                                      InkWell(
+                                        borderRadius: const BorderRadius.horizontal(left: Radius.circular(20)),
+                                        onTap: _busy ? null : () => _toggleSharing(!_sharing),
+                                        onLongPress: _showSharingOptionsSheet,
+                                        child: Padding(
+                                          padding: const EdgeInsets.fromLTRB(10, 6, 8, 6),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Container(
+                                                width: 8,
+                                                height: 8,
+                                                decoration: BoxDecoration(
+                                                  shape: BoxShape.circle,
+                                                  color: dotColor,
+                                                  boxShadow: isLive && _online
+                                                      ? [
+                                                          BoxShadow(
+                                                            color: dotColor.withValues(alpha: 0.45),
+                                                            blurRadius: 5,
+                                                            spreadRadius: 1,
+                                                          ),
+                                                        ]
+                                                      : null,
+                                                ),
+                                              ),
+                                              const SizedBox(width: 6),
+                                              Text(
+                                                statusText,
+                                                style: TextStyle(
+                                                  fontSize: 12.5,
+                                                  fontWeight: FontWeight.w800,
+                                                  color: textColor,
+                                                  letterSpacing: 0.1,
+                                                ),
+                                              ),
+                                            ],
                                           ),
                                         ),
                                       ),
-                                    ),
+
+                                      // Subtle vertical hairline divider inside capsule
+                                      Container(
+                                        width: 1,
+                                        height: 16,
+                                        color: isLive && _online ? const Color(0xFFA7F3D0) : const Color(0xFFE2E8F0),
+                                      ),
+
+                                      // Animated sync button
+                                      Tooltip(
+                                        message: 'Sync location data',
+                                        child: InkWell(
+                                          borderRadius: const BorderRadius.horizontal(right: Radius.circular(20)),
+                                          onTap: _busy || _refreshing ? null : _refresh,
+                                          child: Padding(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                            child: RotationTransition(
+                                              turns: _syncAnimController,
+                                              child: Icon(
+                                                Icons.sync_rounded,
+                                                size: 17,
+                                                color: isLive && _online ? const Color(0xFF059669) : const Color(0xFF64748B),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
+                                ),
+                              );
+                            },
+                          ),
+                        ],
                       ),
-                    ],
+                    ),
                   ),
                 ),
-              ),
+
+                // Offline banner: explains that live updates are paused and
+                // will sync automatically once internet returns.
+                if (!_online)
+                  Container(
+                    margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFEF3C7),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFFFDE68A)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.wifi_off_rounded, size: 16, color: Color(0xFFB45309)),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _sharing
+                                ? "You're offline — live updates are paused. They'll send automatically when internet returns."
+                                : "You're offline — showing last known positions.",
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFF92400E),
+                              height: 1.35,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
             ),
           ),
 
-          // 3. Right Floating Tools Column (Zoom & Re-center)
+          // 3. Right Floating Tools Column (Layers, Zoom & Re-center)
           Positioned(
             right: 16,
             bottom: 24,
             child: Column(
               children: [
+                _FloatingToolButton(
+                  icon: Icons.layers_rounded,
+                  tooltip: 'Map layers',
+                  onTap: _showMapStyleSheet,
+                ),
+                const SizedBox(height: 10),
                 _FloatingToolButton(
                   icon: Icons.my_location_rounded,
                   tooltip: 'Center on my location',

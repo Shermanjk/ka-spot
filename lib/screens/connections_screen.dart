@@ -23,6 +23,7 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
   Map<String, bool> _incomingSharing = {};
   String? _error;
   Timer? _errorTimer;
+  Timer? _refreshTimer;
 
   Widget _relationshipBadge(String relationship, {VoidCallback? onTap}) {
     Color bg;
@@ -73,11 +74,19 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
   void initState() {
     super.initState();
     _load();
+    // Silent auto-refresh so incoming requests, new connections, and sent
+    // invitation updates appear without manual pulling (mirrors the chat
+    // screen's polling while this tab is visible).
+    _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!mounted || _busy || _loading) return;
+      _load(silent: true);
+    });
   }
 
   @override
   void dispose() {
     _errorTimer?.cancel();
+    _refreshTimer?.cancel();
     _idController.dispose();
     super.dispose();
   }
@@ -93,8 +102,8 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
     }
   }
 
-  Future<void> _load() async {
-    if (mounted) setState(() => _loading = true);
+  Future<void> _load({bool silent = false}) async {
+    if (mounted && !silent) setState(() => _loading = true);
     try {
       final result = await Future.wait([
         KaSpotService.connections(),
@@ -111,12 +120,12 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
             row['recipient_id'] as String: row['is_enabled'] as bool
         };
         _incomingSharing = result[3] as Map<String, bool>;
-        _error = null;
+        if (!silent) _error = null;
       });
     } catch (e) {
-      if (mounted) _setError(e.toString());
+      if (mounted && !silent) _setError(e.toString());
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && !silent) setState(() => _loading = false);
     }
   }
 
@@ -174,6 +183,11 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
     final myId = KaSpotService.userId;
     final incomingRequests = _requests
         .where((r) => r['recipient_id'] == myId && r['status'] == 'pending')
+        .toList();
+    final sentInvitations = _requests
+        .where((r) =>
+            r['requester_id'] == myId &&
+            (r['status'] == 'pending' || r['status'] == 'rejected'))
         .toList();
 
     return Scaffold(
@@ -371,7 +385,15 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
               const SizedBox(height: 14),
             ],
 
-            // 4. Circle Members List
+            // 4. Sent Invitations Section (pending ones can be cancelled;
+            // declined ones stay visible as a muted status)
+            if (sentInvitations.isNotEmpty) ...[
+              _sectionHeader('Sent Invitations', sentInvitations.length),
+              ...sentInvitations.map((req) => _sentInvitationCard(req)),
+              const SizedBox(height: 14),
+            ],
+
+            // 5. Circle Members List
             if (_loading)
               const Padding(padding: EdgeInsets.all(32), child: Center(child: CircularProgressIndicator()))
             else if (_people.isEmpty)
@@ -546,7 +568,9 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
 
   Widget _requestCard(Map<String, dynamic> request) {
     final reqId = request['id'] as String;
-    final otherId = request['requester_id'] as String;
+    final name = request['counterpart_name'] as String? ?? 'KaSpot member';
+    final code = request['counterpart_code'] as String? ?? '';
+    final avatarUrl = request['counterpart_avatar'] as String?;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
@@ -561,15 +585,45 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
         children: [
           Row(
             children: [
-              const Icon(Icons.mail_outline_rounded, color: Color(0xFF1E60AA), size: 20),
-              const SizedBox(width: 8),
-              const Text('Wants to connect with you', style: TextStyle(fontWeight: FontWeight.w700)),
-              const Spacer(),
-              Text('${otherId.length > 8 ? otherId.substring(0, 8) : otherId}…',
-                  style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12, fontFamily: 'monospace')),
+              KaSpotAvatar(name: name, avatarUrl: avatarUrl, size: 40, isCircle: true),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15, color: Color(0xFF0F172A)),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if (code.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        code,
+                        style: const TextStyle(
+                            fontSize: 12,
+                            fontFamily: 'monospace',
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF64748B)),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
+          const Row(
+            children: [
+              Icon(Icons.mail_outline_rounded, color: Color(0xFF1E60AA), size: 16),
+              SizedBox(width: 6),
+              Text(
+                'Wants to connect with you',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF475569)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
@@ -584,6 +638,97 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
               ),
             ],
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _sentInvitationCard(Map<String, dynamic> request) {
+    final reqId = request['id'] as String;
+    final isPending = (request['status'] as String? ?? 'pending') == 'pending';
+    final name = request['counterpart_name'] as String? ?? 'KaSpot member';
+    final code = request['counterpart_code'] as String? ?? '';
+    final avatarUrl = request['counterpart_avatar'] as String?;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Row(
+        children: [
+          KaSpotAvatar(name: name, avatarUrl: avatarUrl, size: 38, isCircle: true),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  name,
+                  style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14, color: Color(0xFF0F172A)),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (code.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    code,
+                    style: const TextStyle(
+                        fontSize: 11.5,
+                        fontFamily: 'monospace',
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF64748B)),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          if (isPending)
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFF7ED),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFFED7AA)),
+                  ),
+                  child: const Text(
+                    'Awaiting response',
+                    style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w800, color: Color(0xFFC2410C)),
+                  ),
+                ),
+                TextButton(
+                  onPressed: _busy ? null : () => _run(() => KaSpotService.cancelRequest(reqId), 'Invitation cancelled.'),
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    foregroundColor: const Color(0xFF64748B),
+                  ),
+                  child: const Text('Cancel'),
+                ),
+              ],
+            )
+          else
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF1F5F9),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFE2E8F0)),
+              ),
+              child: const Text(
+                'Declined',
+                style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w800, color: Color(0xFF64748B)),
+              ),
+            ),
         ],
       ),
     );

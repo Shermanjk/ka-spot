@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import '../services/background_location_service.dart';
 import '../services/kaspot_service.dart';
@@ -43,7 +44,7 @@ class ProfileScreen extends StatefulWidget {
                 SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Battery-Smart: Transmits only when you move (50m filter). Sleeps when stationary.',
+                    'Battery-Smart: transmits when you move (50m filter), plus a brief safety heartbeat about every 10 minutes so your circle knows you\'re connected.',
                     style: TextStyle(fontSize: 12.5, color: Color(0xFF475569)),
                   ),
                 ),
@@ -411,6 +412,58 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  /// Signing out is destructive for the current session, so it always goes
+  /// through an explicit confirmation dialog first — a single accidental tap
+  /// must never log the user out.
+  Future<void> _confirmSignOut() async {
+    if (_busy) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.logout_rounded, color: Color(0xFFDC2626)),
+            SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Sign Out?',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+              ),
+            ),
+          ],
+        ),
+        content: const Text(
+          'You will be signed out on this device. Your circle and sharing settings stay saved to your account — you can sign back in anytime.',
+          style: TextStyle(height: 1.45, fontSize: 13.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFDC2626)),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Sign Out'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _busy = true);
+    try {
+      await KaSpotService.signOut();
+      // The auth-state notifier now routes the app back to the Welcome flow.
+    } catch (e) {
+      if (mounted) _notify(e.toString().replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
 
 
   @override
@@ -621,18 +674,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               title: 'Sign Out',
               subtitle: 'Log out of your KaSpot account',
               titleColor: const Color(0xFFDC2626),
-              onTap: _busy
-                  ? null
-                  : () async {
-                      setState(() => _busy = true);
-                      try {
-                        await KaSpotService.signOut();
-                      } catch (e) {
-                        _notify(e.toString());
-                      } finally {
-                        if (mounted) setState(() => _busy = false);
-                      }
-                    },
+              onTap: _busy ? null : _confirmSignOut,
             ),
           ]),
         ],
@@ -667,6 +709,9 @@ class _PrivacyScreenState extends State<PrivacyScreen> {
   bool _isPaused = false;
   bool _loading = true;
   bool _busy = false;
+  String? _loadError;
+  List<Map<String, dynamic>> _members = [];
+  Map<String, bool> _grants = {};
 
   @override
   void initState() {
@@ -676,16 +721,197 @@ class _PrivacyScreenState extends State<PrivacyScreen> {
 
   Future<void> _loadSharingStatus() async {
     try {
-      final active = await KaSpotService.anySharingEnabled();
-      if (mounted) {
-        setState(() {
-          _isPaused = !active;
-          _loading = false;
-        });
-      }
+      final results = await Future.wait([
+        KaSpotService.anySharingEnabled(),
+        KaSpotService.connections(),
+        KaSpotService.sharingGrants(),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        _isPaused = !(results[0] as bool);
+        _members = results[1] as List<Map<String, dynamic>>;
+        _grants = {
+          for (final row in results[2] as List<Map<String, dynamic>>)
+            row['recipient_id'] as String: row['is_enabled'] as bool? ?? false,
+        };
+        _loadError = null;
+        _loading = false;
+      });
     } catch (_) {
-      if (mounted) setState(() => _loading = false);
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadError = 'Could not load your sharing settings. Check your connection and try again.';
+      });
     }
+  }
+
+  Future<void> _retryLoad() async {
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
+    await _loadSharingStatus();
+  }
+
+  /// Enables or disables location sharing for a single circle member. This
+  /// mirrors the Circle tab: enabling requires a live location fix, and
+  /// anything the backend rejects rolls the switch straight back.
+  Future<void> _setMemberSharing(String otherId, bool enabled) async {
+    if (_busy) return;
+    final wasEnabled = _grants[otherId] ?? false;
+    setState(() {
+      _busy = true;
+      _grants[otherId] = enabled;
+    });
+
+    try {
+      if (enabled) {
+        if (!await Geolocator.isLocationServiceEnabled()) {
+          throw Exception('Turn on device location services before sharing.');
+        }
+        var permission = await Geolocator.checkPermission();
+        if (permission == LocationPermission.denied) {
+          permission = await Geolocator.requestPermission();
+        }
+        if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+          throw Exception('Location permission was not granted. Sharing remains off.');
+        }
+        final position = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+        );
+        await KaSpotService.setSharing(otherId, true);
+        await KaSpotService.upsertOwnLocation(position);
+      } else {
+        await KaSpotService.setSharing(otherId, false);
+      }
+
+      // Keep the global "paused" indicator in sync with the per-member grants.
+      try {
+        final active = await KaSpotService.anySharingEnabled();
+        if (mounted) setState(() => _isPaused = !active);
+      } catch (_) {
+        // The grant itself was saved; the pause state refreshes on next load.
+      }
+      if (!mounted) return;
+      _notify(enabled
+          ? 'Location sharing enabled for this person.'
+          : 'Location sharing stopped for this person.');
+    } catch (e) {
+      if (mounted) {
+        setState(() => _grants[otherId] = wasEnabled); // rollback on failure
+        _notify(e.toString().replaceFirst('Exception: ', ''));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  void _notify(String text) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(text),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      ),
+    );
+  }
+
+  Widget _sectionHeading(String text) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 6, 4, 8),
+      child: Text(
+        text.toUpperCase(),
+        style: const TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w800,
+          color: Color(0xFF64748B),
+          letterSpacing: 0.8,
+        ),
+      ),
+    );
+  }
+
+  Widget _memberTile(Map<String, dynamic> member) {
+    final otherId = member['other_id'] as String;
+    final name = member['display_name'] as String? ?? 'KaSpot member';
+    final shares = _grants[otherId] ?? false;
+
+    return SwitchListTile.adaptive(
+      value: shares,
+      onChanged: _busy ? null : (val) => _setMemberSharing(otherId, val),
+      secondary: KaSpotAvatar(
+        name: name,
+        avatarUrl: member['avatar_url'] as String?,
+        size: 40,
+        isCircle: true,
+      ),
+      title: Text(
+        name,
+        style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14, color: Color(0xFF0F172A)),
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Text(
+        shares ? 'Can see your latest location' : 'Location hidden from this person',
+        style: TextStyle(
+          fontSize: 12,
+          color: shares ? const Color(0xFF059669) : const Color(0xFF64748B),
+          fontWeight: shares ? FontWeight.w600 : FontWeight.normal,
+        ),
+      ),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+    );
+  }
+
+  Widget _errorCard() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFEF2F2),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFFECACA)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.error_outline_rounded, color: Color(0xFFDC2626), size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              _loadError!,
+              style: const TextStyle(color: Color(0xFFB91C1C), fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+          ),
+          TextButton(
+            onPressed: _retryLoad,
+            child: const Text('Try Again'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _emptyMembersCard() {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        children: const [
+          Icon(Icons.visibility_off_outlined, size: 32, color: Color(0xFF94A3B8)),
+          SizedBox(height: 10),
+          Text('No circle members yet', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14, color: Color(0xFF0F172A))),
+          SizedBox(height: 6),
+          Text(
+            'Invite trusted people from the Circle tab. Your location stays hidden until you explicitly enable sharing for each person.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Color(0xFF64748B), height: 1.4, fontSize: 12.5),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _togglePause(bool shouldPause) async {
@@ -700,6 +926,12 @@ class _PrivacyScreenState extends State<PrivacyScreen> {
       // shouldPause == false -> resume circle sharing (set is_enabled to true)
       await KaSpotService.setSharingForAll(!shouldPause);
       if (mounted) {
+        setState(() {
+          // Mirror the change on every visible per-member switch.
+          for (final member in _members) {
+            _grants[member['other_id'] as String] = !shouldPause;
+          }
+        });
         ScaffoldMessenger.of(context).hideCurrentSnackBar();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -716,6 +948,7 @@ class _PrivacyScreenState extends State<PrivacyScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => _isPaused = !shouldPause); // rollback on error
+        _loadSharingStatus(); // resync any partial changes from the source of truth
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Failed to update sharing: $e'),
@@ -853,6 +1086,24 @@ class _PrivacyScreenState extends State<PrivacyScreen> {
               contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             ),
           ]),
+          const SizedBox(height: 20),
+          _sectionHeading('Who can see you'),
+          if (_loadError != null)
+            _errorCard()
+          else if (_loading)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else if (_members.isEmpty)
+            _emptyMembersCard()
+          else
+            _SettingsGroup(children: [
+              for (var i = 0; i < _members.length; i++) ...[
+                if (i > 0) const Divider(height: 1, indent: 16, endIndent: 16),
+                _memberTile(_members[i]),
+              ],
+            ]),
           const SizedBox(height: 16),
           Container(
             padding: const EdgeInsets.all(16),
@@ -862,7 +1113,7 @@ class _PrivacyScreenState extends State<PrivacyScreen> {
               border: Border.all(color: const Color(0xFFE2E8F0)),
             ),
             child: const Text(
-              'Consent-First Tracking: When Background Location is OFF, KaSpot never polls or transmits your GPS when the app is closed. When turned ON, KaSpot continues updating your circle using battery-smart 50m movement filtering.',
+              'Consent-First Tracking: When Background Location is OFF, KaSpot never polls or transmits your GPS when the app is closed. When turned ON, KaSpot continues updating your circle using battery-smart 50m movement filtering, plus a brief safety heartbeat about every 10 minutes so your circle knows you\'re connected — and any update that cannot be sent while offline is synced automatically once internet returns.',
               style: TextStyle(color: Color(0xFF64748B), height: 1.45, fontSize: 13),
             ),
           ),
@@ -885,6 +1136,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     'arrival_alerts_enabled': false,
   };
   bool _loading = true;
+  String? _loadError;
+  String? _savingField;
 
   @override
   void initState() {
@@ -895,16 +1148,57 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   Future<void> _load() async {
     try {
       final results = await KaSpotService.notificationPreferences();
-      if (mounted) setState(() => _prefs = results);
-    } catch (_) {}
-    finally {
-      if (mounted) setState(() => _loading = false);
+      if (!mounted) return;
+      setState(() {
+        _prefs = results;
+        _loadError = null;
+        _loading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadError = 'Could not load your notification settings. Check your connection and try again.';
+      });
     }
   }
 
+  Future<void> _retryLoad() async {
+    setState(() {
+      _loading = true;
+      _loadError = null;
+    });
+    await _load();
+  }
+
   Future<void> _toggle(String field, bool value) async {
-    setState(() => _prefs[field] = value);
-    await KaSpotService.setNotificationPreference(field, value);
+    if (_savingField != null) return;
+    final previous = _prefs[field] as bool? ?? false;
+    setState(() {
+      _prefs[field] = value;
+      _savingField = field;
+    });
+    try {
+      await KaSpotService.setNotificationPreference(field, value);
+      if (mounted) _notify('Notification preference updated.');
+    } catch (e) {
+      if (mounted) {
+        setState(() => _prefs[field] = previous); // rollback on failure
+        _notify(e.toString().replaceFirst('Exception: ', ''));
+      }
+    } finally {
+      if (mounted) setState(() => _savingField = null);
+    }
+  }
+
+  void _notify(String text) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(text),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      ),
+    );
   }
 
   @override
@@ -913,28 +1207,62 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       appBar: AppBar(title: const Text('Notifications')),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                _SettingsGroup(children: [
-                  SwitchListTile.adaptive(
-                    value: _prefs['connection_notifications_enabled'] as bool? ?? true,
-                    onChanged: (v) => _toggle('connection_notifications_enabled', v),
-                    title: const Text('Connection Requests', style: TextStyle(fontWeight: FontWeight.w700)),
-                    subtitle: const Text('Get notified when someone asks to connect'),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  ),
-                  const Divider(height: 1, indent: 16, endIndent: 16),
-                  SwitchListTile.adaptive(
-                    value: _prefs['arrival_alerts_enabled'] as bool? ?? false,
-                    onChanged: (v) => _toggle('arrival_alerts_enabled', v),
-                    title: const Text('Arrival & Departure Alerts', style: TextStyle(fontWeight: FontWeight.w700)),
-                    subtitle: const Text('Optional alerts when circle members arrive'),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  ),
-                ]),
-              ],
-            ),
+          : _loadError != null
+              ? ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFEF2F2),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: const Color(0xFFFECACA)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.error_outline_rounded, color: Color(0xFFDC2626), size: 20),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              _loadError!,
+                              style: const TextStyle(color: Color(0xFFB91C1C), fontSize: 13, fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: _retryLoad,
+                            child: const Text('Try Again'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                )
+              : ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    _SettingsGroup(children: [
+                      SwitchListTile.adaptive(
+                        value: _prefs['connection_notifications_enabled'] as bool? ?? true,
+                        onChanged: _savingField == null
+                            ? (v) => _toggle('connection_notifications_enabled', v)
+                            : null,
+                        title: const Text('Connection Requests', style: TextStyle(fontWeight: FontWeight.w700)),
+                        subtitle: const Text('Get notified when someone asks to connect'),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                      ),
+                      const Divider(height: 1, indent: 16, endIndent: 16),
+                      SwitchListTile.adaptive(
+                        value: _prefs['arrival_alerts_enabled'] as bool? ?? false,
+                        onChanged: _savingField == null
+                            ? (v) => _toggle('arrival_alerts_enabled', v)
+                            : null,
+                        title: const Text('Arrival & Departure Alerts', style: TextStyle(fontWeight: FontWeight.w700)),
+                        subtitle: const Text('Optional alerts when circle members arrive'),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                      ),
+                    ]),
+                  ],
+                ),
     );
   }
 }

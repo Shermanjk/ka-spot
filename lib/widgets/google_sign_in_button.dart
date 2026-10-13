@@ -7,11 +7,16 @@ class GoogleSignInButton extends StatelessWidget {
     required this.onPressed,
     this.busy = false,
     this.label = 'Continue with Google',
+    this.busyLabel = 'Signing in…',
   });
 
   final VoidCallback? onPressed;
   final bool busy;
   final String label;
+
+  /// Replaces [label] next to the spinner while [busy] is true, so the tapped
+  /// button itself reports progress (e.g. "Signing in…", "Creating account…").
+  final String busyLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -37,12 +42,35 @@ class GoogleSignInButton extends StatelessWidget {
           onTap: busy ? null : onPressed,
           child: Center(
             child: busy
-                ? const SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2.2,
-                      color: Color(0xFF1E60AA),
+                ? Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.2,
+                            color: Color(0xFF1E60AA),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Flexible(
+                          child: Text(
+                            busyLabel,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFF1E60AA),
+                              letterSpacing: -0.2,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   )
                 : Padding(

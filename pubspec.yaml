@@ -41,6 +41,10 @@ dependencies:
   url_launcher: ^6.3.3
   image_picker: ^1.2.4
   flutter_dotenv: ^6.0.1
+  google_sign_in: ^6.2.2
+  flutter_svg: ^2.3.0
+  connectivity_plus: ^7.3.1
+  shared_preferences: ^2.5.6
 
 dev_dependencies:
   flutter_test:
@@ -52,6 +56,9 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+
+dependency_overrides:
+  path_provider_android: 2.2.23
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

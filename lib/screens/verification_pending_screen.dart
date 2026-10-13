@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/kaspot_service.dart';
+import '../utils/auth_error_formatter.dart';
 import '../widgets/kaspot_logo.dart';
 import 'sign_in_screen.dart';
 
@@ -60,7 +61,7 @@ class _VerificationPendingScreenState extends State<VerificationPendingScreen> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _statusMessage = e.toString().replaceFirst('Exception: ', '');
+          _statusMessage = AuthErrorFormatter.format(e);
           _isError = true;
         });
       }
@@ -163,7 +164,7 @@ class _VerificationPendingScreenState extends State<VerificationPendingScreen> {
                               ? const SizedBox(
                                   width: 20,
                                   height: 20,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF1E60AA)),
                                 )
                               : Text(
                                   _cooldownSeconds > 0

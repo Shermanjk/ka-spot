@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 731" width="100%" height="100%">
+  <!-- Transparent Background (Zero boxiness) -->
+  <defs>
+    <!-- Sky-blue eye color matching user's drawing (#10A0E6) -->
+    <linearGradient id="userOwlEyeGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#14A4E9"/>
+      <stop offset="100%" stop-color="#0284C7"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 1. Pure White Owl Silhouette Head with Defined Contour Stroke -->
+  <!-- Crisp on dark backgrounds, clearly defined on white/light backgrounds -->
+  <path d="
+    M 512 54
+    C 416 54, 304 46, 197 40
+    C 207 72, 218 102, 229 126
+    C 200 134, 168 140, 147 148
+    C 184 200, 206 240, 218 280
+    C 204 370, 244 500, 324 580
+    C 374 630, 439 680, 512 692
+    C 585 680, 650 630, 700 580
+    C 780 500, 820 370, 806 280
+    C 818 240, 840 200, 877 148
+    C 856 140, 824 134, 795 126
+    C 806 102, 817 72, 827 40
+    C 720 46, 608 54, 512 54
+    Z
+  " 
+  fill="#FFFFFF" 
+  stroke="#64748B" 
+  stroke-width="5" 
+  stroke-linejoin="round"
+  stroke-linecap="round"/>
+
+  <!-- 2. Left Eye -->
+  <circle cx="358" cy="350" r="108" fill="url(#userOwlEyeGrad)" stroke="#0284C7" stroke-width="2"/>
+  <!-- Left Eye Specular Highlight -->
+  <circle cx="397.5" cy="309.5" r="38" fill="#FFFFFF"/>
+
+  <!-- 3. Right Eye -->
+  <circle cx="647" cy="350" r="108" fill="url(#userOwlEyeGrad)" stroke="#0284C7" stroke-width="2"/>
+  <!-- Right Eye Specular Highlight -->
+  <circle cx="690.5" cy="306.5" r="38" fill="#FFFFFF"/>
+
+  <!-- 4. Black Beak Droplet -->
+  <path d="
+    M 505 440
+    C 475 440, 458 458, 458 478
+    C 458 502, 485 528, 502 541
+    C 504 542.5, 506 542.5, 508 541
+    C 525 528, 553 502, 553 478
+    C 553 458, 535 440, 505 440
+    Z
+  " 
+  fill="#000000"/>
+</svg>

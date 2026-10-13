@@ -5,12 +5,12 @@ import 'package:flutter/material.dart';
 ///
 /// Features:
 /// - 3D curved globe horizon & perspective latitude/longitude grid terrain.
-/// - Standalone big white hero location pin with Royal Blue core and concentric ground target.
+/// - Centered KaSpot profile beacon — a larger, unique "You" avatar badge standing on the tracked spot, with a gentle breathing pulse & pulsing cyan halo aura.
 /// - 4 active orbiting member avatar pins (Cobalt Blue, Emerald Green, Purple, Sky Blue).
 /// - Dynamic 3D depth scaling (foreground pins scale up with full brightness, background pins recede).
 /// - Live constellation connection beams with traveling signal light packets.
 /// - 100% mathematically seamless looping with zero pops, jumps, or resets.
-/// - Zero static image dependencies; 100% GPU-accelerated vector canvas.
+/// - 100% vector rendering — pure Flutter, no raster assets.
 /// - Respects [MediaQuery.disableAnimations] for accessibility.
 class CircleTrustIllustration extends StatefulWidget {
   const CircleTrustIllustration({
@@ -85,7 +85,9 @@ class _CircleTrustIllustrationState extends State<CircleTrustIllustration>
 }
 
 class _Vector3DGlobeHeroPainter extends CustomPainter {
-  _Vector3DGlobeHeroPainter({required this.progress});
+  _Vector3DGlobeHeroPainter({
+    required this.progress,
+  });
 
   final double progress;
 
@@ -112,8 +114,8 @@ class _Vector3DGlobeHeroPainter extends CustomPainter {
     // 5. Four Active Orbiting Member Avatar Pins (with 3D depth scaling)
     _drawOrbitingMembers(canvas, groundCenter, width, height);
 
-    // 6. Standalone Big Location Pin (Crisp White Hero Beacon - Option 1)
-    _drawBigLocationPin(canvas, groundCenter, width);
+    // 6. Central KaSpot Profile Beacon — "You" avatar badge on the tracked spot
+    _drawCenterProfileBeacon(canvas, groundCenter);
 
     // 7. Ambient Constellation Particles / Light Flares
     _drawAmbientSparkles(canvas, width, height);
@@ -419,12 +421,12 @@ class _Vector3DGlobeHeroPainter extends CustomPainter {
 
   /// Dedicated Ground Center Anchor & Target Point
   void _drawCenterPointAnchor(Canvas canvas, Offset groundCenter) {
-    // A. Soft oval contact shadow on the terrain directly beneath the pin
+    // A. Soft oval contact shadow on the terrain (pin is planted — static)
     final shadowPaint = Paint()
-      ..color = const Color(0xFF0F172A).withValues(alpha: 0.28)
+      ..color = const Color(0xFF0F172A).withValues(alpha: 0.24)
       ..style = PaintingStyle.fill;
     canvas.drawOval(
-      Rect.fromCenter(center: groundCenter, width: 34, height: 12),
+      Rect.fromCenter(center: groundCenter, width: 38, height: 13),
       shadowPaint,
     );
 
@@ -448,72 +450,98 @@ class _Vector3DGlobeHeroPainter extends CustomPainter {
     );
   }
 
-  /// Standalone Big Location Pin (Crisp White Hero Beacon - Option 1)
+  /// Central KaSpot "You" Profile Beacon — a larger, unique avatar badge
+  /// standing on the tracked spot.
   ///
-  /// Prominent, high-contrast pure white teardrop pin with a signature Royal Blue
-  /// cutout core dot, floating directly above the ground center target point.
-  void _drawBigLocationPin(Canvas canvas, Offset groundCenter, double width) {
-    // Gentle hovering breath (3px wave)
-    final hoverY = math.sin(progress * 2 * math.pi) * 3.0;
+  /// Shares the member-pin family (white-bordered circle + white avatar glyph)
+  /// but stands out with a gradient core, a slim stem, an orbiting beacon halo
+  /// ring, a gentle breathing pulse and the luminous pulsing cyan aura.
+  void _drawCenterProfileBeacon(Canvas canvas, Offset groundCenter) {
+    final pulseScale = 1.0 + math.sin(progress * 2 * math.pi) * 0.02;
 
-    const pinHeadRadius = 17.0;
-    final pinCenter = Offset(groundCenter.dx, groundCenter.dy - 34.0 + hoverY);
-    final pinTipY = groundCenter.dy - 6.0 + hoverY;
+    // Badge proportions — deliberately larger than the orbiting member pins.
+    const badgeRadius = 22.0;
+    const badgeCenterLift = 34.0; // badge centre above the ground contact
+    const badgeCenter = Offset(0, -badgeCenterLift);
 
-    // Smooth teardrop location pin path (pure vector geometry)
-    final pinPath = Path()
-      ..moveTo(groundCenter.dx, pinTipY)
-      ..cubicTo(
-        groundCenter.dx - pinHeadRadius * 1.05, pinCenter.dy + pinHeadRadius * 0.55,
-        groundCenter.dx - pinHeadRadius, pinCenter.dy - pinHeadRadius * 0.85,
-        groundCenter.dx, pinCenter.dy - pinHeadRadius,
-      )
-      ..cubicTo(
-        groundCenter.dx + pinHeadRadius, pinCenter.dy - pinHeadRadius * 0.85,
-        groundCenter.dx + pinHeadRadius * 1.05, pinCenter.dy + pinHeadRadius * 0.55,
-        groundCenter.dx, pinTipY,
-      );
+    canvas.save();
+    // Scale around the ground contact so the beacon stays planted.
+    canvas.translate(groundCenter.dx, groundCenter.dy);
+    canvas.scale(pulseScale);
 
-    // 1. Soft ambient cyan outer glow for visual lift
-    final glowPaint = Paint()
-      ..color = const Color(0xFF00E5FF).withValues(alpha: 0.35)
+    // A. Luminous Pulsing Cyan / Sky-Blue Halo Aura
+    const auraRadius = 44.0;
+    final auraPulse = math.sin(progress * 2 * math.pi) * 0.5 + 0.5;
+    final auraOpacity = (0.28 + auraPulse * 0.22).clamp(0.20, 0.55);
+    final auraPaint = Paint()
+      ..shader = RadialGradient(
+        colors: [
+          const Color(0xFF00E5FF).withValues(alpha: auraOpacity),
+          const Color(0xFF0D8AD1).withValues(alpha: auraOpacity * 0.45),
+          Colors.transparent,
+        ],
+        stops: const [0.0, 0.55, 1.0],
+      ).createShader(Rect.fromCircle(center: badgeCenter, radius: auraRadius));
+    canvas.drawCircle(badgeCenter, auraRadius, auraPaint);
+
+    // B. Slim rounded stem connecting the badge to the tracked spot
+    final stemWhite = Paint()
+      ..color = Colors.white
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 3.5;
-    canvas.drawPath(pinPath, glowPaint);
+      ..strokeWidth = 9.0
+      ..strokeCap = StrokeCap.round;
+    final stemCore = Paint()
+      ..color = const Color(0xFF0A6BAF)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 6.0
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(const Offset(0, -1), const Offset(0, -14), stemWhite);
+    canvas.drawLine(const Offset(0, -1), const Offset(0, -14), stemCore);
 
-    // 2. Subtle soft elevation shadow
-    final elevationShadow = Paint()
-      ..color = const Color(0xFF0F172A).withValues(alpha: 0.16)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3.5);
-    canvas.drawPath(pinPath.shift(const Offset(0, 3)), elevationShadow);
+    // C. Unique beacon halo ring orbiting the badge (no member pin has this)
+    final haloRingPaint = Paint()
+      ..color = const Color(0xFF00E5FF).withValues(alpha: 0.30 + auraPulse * 0.25)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6;
+    canvas.drawCircle(badgeCenter, badgeRadius + 6.5, haloRingPaint);
 
-    // 3. Crisp pure opaque white pin body (Option 1 - maximum contrast)
-    final pinPaint = Paint()
+    // D. Crisp white border ring (member-pin family look, thicker at this size)
+    final borderPaint = Paint()
       ..color = Colors.white
       ..style = PaintingStyle.fill;
-    canvas.drawPath(pinPath, pinPaint);
+    canvas.drawCircle(badgeCenter, badgeRadius + 2.6, borderPaint);
 
-    // 4. Subtle crisp outer edge definition
-    final edgePaint = Paint()
-      ..color = const Color(0xFFE2E8F0)
+    // E. Gradient core badge (unique to the center — members use flat colors)
+    final corePaint = Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [Color(0xFF3FB2EE), Color(0xFF0A6BAF)],
+      ).createShader(Rect.fromCircle(center: badgeCenter, radius: badgeRadius));
+    canvas.drawCircle(badgeCenter, badgeRadius, corePaint);
+
+    // Soft inner bevel rim for depth
+    final bevelPaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.22)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.0;
-    canvas.drawPath(pinPath, edgePaint);
+      ..strokeWidth = 1.4;
+    canvas.drawCircle(badgeCenter, badgeRadius - 2.2, bevelPaint);
 
-    // 5. Signature KaSpot Royal Blue center cutout dot
-    final dotCenter = Offset(groundCenter.dx, pinCenter.dy - 1.5);
-    const dotRadius = pinHeadRadius * 0.42; // ~7.1px radius
-    final dotPaint = Paint()
-      ..color = const Color(0xFF1D4ED8) // Deep signature Royal Blue
-      ..style = PaintingStyle.fill;
-    canvas.drawCircle(dotCenter, dotRadius, dotPaint);
+    // F. Bigger white person / avatar glyph (same silhouette family as members)
+    _drawAvatarSilhouette(canvas, badgeCenter, badgeRadius * 0.56, 1.0);
 
-    // 6. Refined sky-blue accent ring inside the cutout dot
-    final innerRingPaint = Paint()
-      ..color = const Color(0xFF38BDF8).withValues(alpha: 0.45)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.0;
-    canvas.drawCircle(dotCenter, dotRadius, innerRingPaint);
+    // G. Soft specular highlight for a polished 3D read
+    canvas.save();
+    canvas.translate(badgeCenter.dx - badgeRadius * 0.32, badgeCenter.dy - badgeRadius * 0.42);
+    canvas.rotate(-0.31);
+    final highlightPaint = Paint()..color = Colors.white.withValues(alpha: 0.26);
+    canvas.drawOval(
+      Rect.fromCenter(center: Offset.zero, width: badgeRadius * 0.42, height: badgeRadius * 0.55),
+      highlightPaint,
+    );
+    canvas.restore();
+
+    canvas.restore();
   }
 
   /// Floating ambient constellation particles & sparkle orbs
