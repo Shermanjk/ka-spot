@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -10,6 +11,7 @@ import 'screens/welcome_screen.dart';
 import 'services/background_location_service.dart';
 import 'services/connectivity_service.dart';
 import 'services/kaspot_service.dart';
+import 'services/push_notification_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -31,6 +33,9 @@ Future<void> main() async {
     // .env is optional when building with --dart-define or CI environments
   }
 
+  // Initialise Firebase before anything else (required for FCM).
+  await Firebase.initializeApp();
+
   final url = dotenv.maybeGet('SUPABASE_URL') ??
       const String.fromEnvironment('SUPABASE_URL');
   final anonKey = dotenv.maybeGet('SUPABASE_ANON_KEY') ??
@@ -45,6 +50,10 @@ Future<void> main() async {
   // the app was last closed.
   unawaited(KaSpotService.flushPendingLocation());
   unawaited(BackgroundLocationService.initialize());
+  // Initialise FCM push notifications (Android). Token is registered with
+  // Supabase only after the user is authenticated — see PushNotificationService
+  // and KaSpotService.registerFcmToken().
+  unawaited(PushNotificationService.initialize());
   runApp(const KaSpotApp());
 }
 
@@ -93,6 +102,11 @@ class _KaSpotAppState extends State<KaSpotApp> {
       // A fix queued while signed out (or offline) can now be safely
       // attributed to the signed-in account and sent.
       unawaited(KaSpotService.flushPendingLocation());
+      // Register (or refresh) the FCM token now that we have an authenticated
+      // user id to associate it with.
+      unawaited(PushNotificationService.initialize());
+      // Load existing unread message counts so badges show immediately.
+      unawaited(KaSpotService.loadUnreadCounts());
     }
     // Whenever authentication state changes (sign in, sign out, session restore),
     // pop all pushed auth routes back to root so HomeShell or WelcomeScreen is cleanly displayed.

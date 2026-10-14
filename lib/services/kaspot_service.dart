@@ -194,8 +194,12 @@ class KaSpotService {
         if (res != null && res.toString().isNotEmpty) {
           return res.toString();
         }
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('[KaSpot] lookup_user_by_code RPC failed: $e');
+      }
 
+      // Fallback: the RPC is the preferred path; this scan is a safety net
+      // and only works if the profiles RLS policy permits reading other rows.
       try {
         final rows = await _client!.from('profiles').select('id');
         for (final row in rows) {
@@ -205,7 +209,9 @@ class KaSpotService {
             return targetId;
           }
         }
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('[KaSpot] profiles fallback scan failed: $e');
+      }
     } else {
       if (_localUser != null) {
         final localId = _localUser!['id'] as String? ?? '';
@@ -520,6 +526,22 @@ class KaSpotService {
   /// Abandon the password-recovery flow without changing the password.
   static Future<void> cancelPasswordRecovery() async {
     await signOut();
+  }
+
+  /// Stores the FCM device token in the `device_tokens` table so the
+  /// Supabase Edge Function can look it up when delivering push notifications.
+  static Future<void> registerFcmToken(String token) async {
+    if (_client == null || userId.isEmpty) return;
+    try {
+      await _client!.from('device_tokens').upsert({
+        'user_id': userId,
+        'token': token,
+        'platform': 'android',
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }, onConflict: 'user_id,token');
+    } catch (e) {
+      debugPrint('[KaSpot] registerFcmToken failed: $e');
+    }
   }
 
   static Future<void> signOut() async {
@@ -1116,6 +1138,65 @@ class KaSpotService {
 
   // In-Circle Chat Messaging
   static final List<Map<String, dynamic>> _localMessages = [];
+
+  /// Global unread-message counts keyed by sender id.
+  /// Updated by HomeShell's Realtime subscription and cleared when the
+  /// recipient opens a conversation. Widgets listen via [unreadCounts].
+  static final ValueNotifier<Map<String, int>> unreadCounts =
+      ValueNotifier<Map<String, int>>({});
+
+  /// Increments the in-memory unread counter for [senderId] by 1.
+  static void incrementUnread(String senderId) {
+    final current = Map<String, int>.from(unreadCounts.value);
+    current[senderId] = (current[senderId] ?? 0) + 1;
+    unreadCounts.value = current;
+  }
+
+  /// Clears the unread counter for [senderId] and marks their messages as read
+  /// in the database so the count stays at zero after a hot-restart too.
+  static Future<void> markMessagesRead(String senderId) async {
+    final current = Map<String, int>.from(unreadCounts.value);
+    current.remove(senderId);
+    unreadCounts.value = current;
+
+    if (_client != null) {
+      try {
+        await _client!.from('circle_messages').update({
+          'read_at': DateTime.now().toUtc().toIso8601String(),
+        }).eq('sender_id', senderId).eq('recipient_id', userId).isFilter('read_at', null);
+      } catch (e) {
+        debugPrint('[KaSpot] markMessagesRead failed: $e');
+      }
+    }
+  }
+
+  /// Returns the total unread count across all senders.
+  static int get totalUnreadCount =>
+      unreadCounts.value.values.fold(0, (sum, n) => sum + n);
+
+  /// Loads unread message counts from the database on startup so badges
+  /// appear immediately even before a new Realtime event arrives.
+  /// Counts all rows where recipient = me and read_at IS NULL, grouped by sender.
+  static Future<void> loadUnreadCounts() async {
+    if (_client == null || userId.isEmpty) return;
+    try {
+      final rows = await _client!
+          .from('circle_messages')
+          .select('sender_id')
+          .eq('recipient_id', userId)
+          .isFilter('read_at', null);
+      final counts = <String, int>{};
+      for (final row in rows) {
+        final sender = row['sender_id'] as String?;
+        if (sender != null && sender != userId) {
+          counts[sender] = (counts[sender] ?? 0) + 1;
+        }
+      }
+      unreadCounts.value = counts;
+    } catch (e) {
+      debugPrint('[KaSpot] loadUnreadCounts failed: $e');
+    }
+  }
 
   static Future<List<Map<String, dynamic>>> getCircleMessages(String otherUserId) async {
     if (_client != null) {

@@ -36,6 +36,9 @@ class _MapScreenState extends State<MapScreen> with SingleTickerProviderStateMix
   String? _myAvatarUrl;
   _MapLayerMode _layerMode = _MapLayerMode.standard;
   RealtimeChannel? _channel;
+  // Safety-net: re-fetches shared locations every 30 s so missed Realtime
+  // events (brief channel drops) are caught and staleness labels self-update.
+  Timer? _safetyTimer;
 
   @override
   void initState() {
@@ -45,6 +48,7 @@ class _MapScreenState extends State<MapScreen> with SingleTickerProviderStateMix
       duration: const Duration(milliseconds: 700),
     );
     KaSpotService.profileNotifier.addListener(_onProfileUpdated);
+    BackgroundLocationService.livePosition.addListener(_onLivePosition);
     _online = ConnectivityService.isOnline.value;
     ConnectivityService.isOnline.addListener(_onConnectivityChanged);
     if (KaSpotService.lastUserLatitude != null && KaSpotService.lastUserLongitude != null) {
@@ -53,6 +57,22 @@ class _MapScreenState extends State<MapScreen> with SingleTickerProviderStateMix
     _refresh();
     _subscribe();
     _initAutoLocate();
+    // 30-second safety-net: catches missed Realtime events and forces
+    // staleness label re-evaluation without hammering the server.
+    _safetyTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted && !_refreshing) unawaited(_refresh());
+    });
+  }
+
+  /// Called whenever the background GPS stream emits a new position.
+  /// Updates the own-user marker in real-time without requiring a manual tap.
+  void _onLivePosition() {
+    final pos = BackgroundLocationService.livePosition.value;
+    if (pos == null || !mounted) return;
+    final point = LatLng(pos.latitude, pos.longitude);
+    KaSpotService.lastUserLatitude = pos.latitude;
+    KaSpotService.lastUserLongitude = pos.longitude;
+    setState(() => _myPoint = point);
   }
 
   /// Connection state drives the offline banner, the status pill and an
@@ -67,19 +87,9 @@ class _MapScreenState extends State<MapScreen> with SingleTickerProviderStateMix
   }
 
   Future<void> _initAutoLocate() async {
-    // 1. Instant zero-latency warm-start: If OS has cached last known position, center immediately
-    try {
-      final last = await Geolocator.getLastKnownPosition();
-      if (last != null && mounted) {
-        final point = LatLng(last.latitude, last.longitude);
-        KaSpotService.lastUserLatitude = last.latitude;
-        KaSpotService.lastUserLongitude = last.longitude;
-        setState(() => _myPoint = point);
-        _map.move(point, 16.0);
-      }
-    } catch (_) {}
-
-    // 2. High-precision live GPS lock
+    // Go straight to a fresh high-precision GPS fix. Skip getLastKnownPosition()
+    // because the OS cache can be hours old and causes the marker to jump to a
+    // stale location before snapping to the real position.
     await _autoLocate();
   }
 
@@ -99,7 +109,7 @@ class _MapScreenState extends State<MapScreen> with SingleTickerProviderStateMix
       final position = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
-          timeLimit: Duration(seconds: 12),
+          timeLimit: Duration(seconds: 8),
         ),
       );
 
@@ -148,6 +158,14 @@ class _MapScreenState extends State<MapScreen> with SingleTickerProviderStateMix
         table: 'locations',
         callback: (_) => _refresh(),
       )
+      // Fix: also catch DELETE so a member's pin disappears the instant they
+      // turn off sharing and their locations row is removed.
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.delete,
+        schema: 'public',
+        table: 'locations',
+        callback: (_) => _refresh(),
+      )
       ..onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
@@ -160,9 +178,11 @@ class _MapScreenState extends State<MapScreen> with SingleTickerProviderStateMix
 
   @override
   void dispose() {
+    _safetyTimer?.cancel();
     _syncAnimController.stop();
     _syncAnimController.dispose();
     KaSpotService.profileNotifier.removeListener(_onProfileUpdated);
+    BackgroundLocationService.livePosition.removeListener(_onLivePosition);
     ConnectivityService.isOnline.removeListener(_onConnectivityChanged);
     final channel = _channel;
     if (channel != null && KaSpotService.isConfigured) {
@@ -665,26 +685,15 @@ class _MapScreenState extends State<MapScreen> with SingleTickerProviderStateMix
 
   @override
   Widget build(BuildContext context) {
-    // Markers: Mathematically exact center beacon for 'You' with pulse & avatar, anchored needle pins for friends
+    // Markers: friend pins first (lower Z), own beacon last (always on top).
+    // flutter_map renders markers in list order using a Stack, so later entries
+    // paint over earlier ones. Own marker must be last so it is never hidden
+    // when two devices are at the same coordinate.
     final markers = <Marker>[
-      if (_myPoint != null)
-        Marker(
-          key: ValueKey('user-beacon-${_myAvatarUrl?.hashCode}-$_sharing'),
-          point: _myPoint!,
-          width: 96,
-          height: 96,
-          alignment: Alignment.center,
-          child: _PulsingLocationBeacon(
-            key: ValueKey('pulsing-beacon-$_myName-${_myAvatarUrl?.hashCode}-$_sharing'),
-            name: _myName,
-            avatarUrl: _myAvatarUrl,
-            isSharing: _sharing,
-          ),
-        ),
       ..._shared.map((item) {
         final recorded = DateTime.tryParse(item['recorded_at'] as String? ?? '')?.toLocal();
-        // 20 minutes gives the ~10-minute stationary heartbeat safe margin
-        // before a member is flagged as inactive on aggressive OEMs.
+        // 20 minutes gives the ~30-second stationary heartbeat safe margin
+        // before a member is flagged as inactive.
         final stale = recorded == null || DateTime.now().difference(recorded) > const Duration(minutes: 20);
         final name = (item['display_name'] as String? ?? 'Friend').split(' ').first;
         final point = LatLng(
@@ -707,6 +716,21 @@ class _MapScreenState extends State<MapScreen> with SingleTickerProviderStateMix
           ),
         );
       }),
+      // Own beacon is LAST so it paints on top of all friend markers.
+      if (_myPoint != null)
+        Marker(
+          key: ValueKey('user-beacon-${_myAvatarUrl?.hashCode}-$_sharing'),
+          point: _myPoint!,
+          width: 96,
+          height: 96,
+          alignment: Alignment.center,
+          child: _PulsingLocationBeacon(
+            key: ValueKey('pulsing-beacon-$_myName-${_myAvatarUrl?.hashCode}-$_sharing'),
+            name: _myName,
+            avatarUrl: _myAvatarUrl,
+            isSharing: _sharing,
+          ),
+        ),
     ];
 
     return Scaffold(

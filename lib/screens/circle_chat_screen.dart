@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/kaspot_service.dart';
 import '../widgets/kaspot_avatar.dart';
 
@@ -27,7 +28,7 @@ class _CircleChatScreenState extends State<CircleChatScreen> {
   List<Map<String, dynamic>> _messages = [];
   bool _loading = true;
   bool _sending = false;
-  Timer? _refreshTimer;
+  RealtimeChannel? _channel;
 
   static const List<String> _quickAlerts = [
     "🚶 I'm away right now",
@@ -41,13 +42,31 @@ class _CircleChatScreenState extends State<CircleChatScreen> {
   void initState() {
     super.initState();
     _loadMessages();
-    // Auto-refresh chat every 4 seconds while screen is open
-    _refreshTimer = Timer.periodic(const Duration(seconds: 4), (_) => _loadMessages(silent: true));
+    _subscribeRealtime();
+    // Mark all unread messages from this person as read the moment the screen opens.
+    KaSpotService.markMessagesRead(widget.otherId);
+  }
+
+  /// Subscribe to Supabase Realtime so new messages appear instantly without polling.
+  void _subscribeRealtime() {
+    if (!KaSpotService.isConfigured) return;
+    final myId = KaSpotService.userId;
+    _channel = KaSpotService.client!
+        .channel('chat-${myId}_${widget.otherId}')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.insert,
+        schema: 'public',
+        table: 'circle_messages',
+        callback: (_) => _loadMessages(silent: true),
+      )
+      ..subscribe();
   }
 
   @override
   void dispose() {
-    _refreshTimer?.cancel();
+    if (_channel != null && KaSpotService.isConfigured) {
+      unawaited(KaSpotService.client!.removeChannel(_channel!));
+    }
     _textController.dispose();
     _scrollController.dispose();
     super.dispose();

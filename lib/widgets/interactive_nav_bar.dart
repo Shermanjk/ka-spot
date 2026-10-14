@@ -6,16 +6,20 @@ class InteractiveNavItem {
     required this.icon,
     required this.selectedIcon,
     required this.label,
+    this.badgeCount = 0,
   });
 
   final IconData icon;
   final IconData selectedIcon;
   final String label;
+
+  /// When > 0, a red badge is shown on the icon bubble.
+  final int badgeCount;
 }
 
 /// Custom animated pop-out navigation bar.
 ///
-/// When a tab is selected, it physically pops upward (-7px) with a spring curve
+/// When a tab is selected, it physically pops upward with a spring curve
 /// and casts a soft 3D ambient glow shadow, creating a tactile "hovering" effect.
 class InteractiveNavBar extends StatelessWidget {
   const InteractiveNavBar({
@@ -82,6 +86,9 @@ class _NavTabItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final hasBadge = item.badgeCount > 0;
+    final badgeLabel = item.badgeCount > 99 ? '99+' : '${item.badgeCount}';
+
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
@@ -92,55 +99,92 @@ class _NavTabItem extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // The Pop-Out Animated Icon Bubble with Spring Lift
+            // Pop-Out Animated Icon Bubble with optional red badge
             AnimatedSlide(
               duration: const Duration(milliseconds: 280),
               curve: Curves.easeOutBack,
               offset: Offset(0, isSelected ? -0.15 : 0),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 240),
-                curve: Curves.easeOut,
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: isSelected
-                      ? const LinearGradient(
-                          colors: [Color(0xFF2196F3), Color(0xFF1E5EBF)],
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                        )
-                      : null,
-                  color: isSelected ? null : Colors.transparent,
-                  boxShadow: isSelected
-                      ? const [
-                          BoxShadow(
-                            color: Color(0x382196F3),
-                            blurRadius: 10,
-                            spreadRadius: 1,
-                            offset: Offset(0, 5),
-                          ),
-                        ]
-                      : null,
-                ),
-                child: Center(
-                  child: AnimatedScale(
-                    duration: const Duration(milliseconds: 280),
-                    curve: Curves.easeOutBack,
-                    scale: isSelected ? 1.06 : 1.0,
-                    child: Icon(
-                      isSelected ? item.selectedIcon : item.icon,
-                      size: 22,
-                      color: isSelected ? Colors.white : const Color(0xFF94A3B8),
+              child: Stack(
+                clipBehavior: Clip.none,
+                alignment: Alignment.center,
+                children: [
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 240),
+                    curve: Curves.easeOut,
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: isSelected
+                          ? const LinearGradient(
+                              colors: [Color(0xFF2196F3), Color(0xFF1E5EBF)],
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                            )
+                          : null,
+                      color: isSelected ? null : Colors.transparent,
+                      boxShadow: isSelected
+                          ? const [
+                              BoxShadow(
+                                color: Color(0x382196F3),
+                                blurRadius: 10,
+                                spreadRadius: 1,
+                                offset: Offset(0, 5),
+                              ),
+                            ]
+                          : null,
+                    ),
+                    child: Center(
+                      child: AnimatedScale(
+                        duration: const Duration(milliseconds: 280),
+                        curve: Curves.easeOutBack,
+                        scale: isSelected ? 1.06 : 1.0,
+                        child: Icon(
+                          isSelected ? item.selectedIcon : item.icon,
+                          size: 22,
+                          color: isSelected ? Colors.white : const Color(0xFF94A3B8),
+                        ),
+                      ),
                     ),
                   ),
-                ),
+
+                  // Red unread badge — top-right corner of the bubble
+                  if (hasBadge)
+                    Positioned(
+                      top: -3,
+                      right: -3,
+                      child: AnimatedScale(
+                        duration: const Duration(milliseconds: 200),
+                        curve: Curves.easeOutBack,
+                        scale: hasBadge ? 1.0 : 0.0,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                          constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEF4444),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: Colors.white, width: 1.5),
+                          ),
+                          child: Text(
+                            badgeLabel,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800,
+                              color: Colors.white,
+                              height: 1.1,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
 
             const SizedBox(height: 2),
 
-            // Tab Label with color transition
+            // Tab label with color transition
             AnimatedDefaultTextStyle(
               duration: const Duration(milliseconds: 200),
               style: TextStyle(
@@ -153,7 +197,7 @@ class _NavTabItem extends StatelessWidget {
               child: Text(item.label),
             ),
 
-            // Active Precision Beacon Dot
+            // Active precision beacon dot
             AnimatedContainer(
               duration: const Duration(milliseconds: 240),
               curve: Curves.easeOut,

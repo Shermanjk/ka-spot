@@ -8,13 +8,18 @@ import 'kaspot_service.dart';
 /// Features:
 /// - Explicit user consent toggle (OFF by default).
 /// - Android foreground service notification ('KaSpot: Location Sharing Active').
-/// - 50-meter distance filtering and 30-second interval throttling to protect battery.
+/// - 5-meter distance filtering and 3-second interval for near-real-time tracking.
+/// - Heartbeat every 30 seconds when stationary to keep the map marker fresh.
 /// - Automatic transmission when the device is connected to the internet.
 class BackgroundLocationService {
   BackgroundLocationService._();
 
   static final ValueNotifier<bool> isBackgroundSharingEnabled = ValueNotifier<bool>(false);
   static final ValueNotifier<bool> isStreamingActive = ValueNotifier<bool>(false);
+
+  /// Emits every fresh GPS position from the background stream so the map
+  /// screen can update the own-user marker without requiring a manual recenter.
+  static final ValueNotifier<Position?> livePosition = ValueNotifier<Position?>(null);
 
   static StreamSubscription<Position>? _positionSubscription;
   static Timer? _heartbeatTimer;
@@ -64,16 +69,16 @@ class BackgroundLocationService {
     final hasPermission = await requestBackgroundPermission();
     if (!hasPermission) return;
 
-    // Movement-optimized settings:
-    // - 50m distance filter: phone sleeps when user is stationary (saving battery & egress!)
-    // - 30s interval: smooth update rate when traveling
+    // Near-real-time settings:
+    // - 5m distance filter: catches slow walking and fine movement
+    // - 3s interval: map marker updates every ~3 seconds while moving
     late final LocationSettings locationSettings;
 
     if (defaultTargetPlatform == TargetPlatform.android) {
       locationSettings = AndroidSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 50,
-        intervalDuration: const Duration(seconds: 30),
+        distanceFilter: 5,
+        intervalDuration: const Duration(seconds: 3),
         foregroundNotificationConfig: const ForegroundNotificationConfig(
           notificationTitle: 'KaSpot · Live Sharing Active',
           notificationText: 'Sharing your location with your authorized circle',
@@ -83,14 +88,14 @@ class BackgroundLocationService {
     } else if (defaultTargetPlatform == TargetPlatform.iOS) {
       locationSettings = AppleSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 50,
-        pauseLocationUpdatesAutomatically: true,
+        distanceFilter: 5,
+        pauseLocationUpdatesAutomatically: false,
         showBackgroundLocationIndicator: true,
       );
     } else {
       locationSettings = const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 50,
+        distanceFilter: 5,
       );
     }
 
@@ -99,6 +104,7 @@ class BackgroundLocationService {
     ).listen(
       (position) async {
         try {
+          livePosition.value = position;
           await KaSpotService.upsertOwnLocation(position);
           _lastFixAt = DateTime.now();
         } catch (e) {
@@ -110,14 +116,12 @@ class BackgroundLocationService {
       },
     );
 
-    // Safety heartbeat: with the 50m distance filter a stationary phone emits
-    // no stream updates, so send one lightweight fix roughly every 10 minutes.
-    // This keeps the member correctly shown as "Live" instead of a false
-    // "App inactive" while background sharing is on. Failures pass through the
-    // pending-location queue and are retried when connectivity returns.
-    _heartbeatTimer = Timer.periodic(const Duration(minutes: 10), (_) {
+    // Heartbeat: with the 5m distance filter a stationary phone emits no stream
+    // updates. Send a lightweight fix every 30 seconds so the map marker stays
+    // live even when the user hasn't moved.
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       final last = _lastFixAt;
-      if (last != null && DateTime.now().difference(last) < const Duration(minutes: 8)) {
+      if (last != null && DateTime.now().difference(last) < const Duration(seconds: 20)) {
         return; // A movement update was already reported recently.
       }
       unawaited(_sendHeartbeat());
@@ -140,6 +144,7 @@ class BackgroundLocationService {
           timeLimit: Duration(seconds: 30),
         ),
       );
+      livePosition.value = position;
       await KaSpotService.upsertOwnLocation(position);
       _lastFixAt = DateTime.now();
       debugPrint('KaSpot heartbeat sent.');

@@ -74,9 +74,10 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
   void initState() {
     super.initState();
     _load();
+    // Load existing unread counts from DB so badges show on first open.
+    unawaited(KaSpotService.loadUnreadCounts());
     // Silent auto-refresh so incoming requests, new connections, and sent
-    // invitation updates appear without manual pulling (mirrors the chat
-    // screen's polling while this tab is visible).
+    // invitation updates appear without manual pulling.
     _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       if (!mounted || _busy || _loading) return;
       _load(silent: true);
@@ -405,146 +406,315 @@ class _ConnectionsScreenState extends State<ConnectionsScreen> {
                 final theyShareWithMe = _incomingSharing[otherId] ?? false;
                 final name = person['display_name'] as String? ?? 'Member';
                 final rel = person['relationship'] as String? ?? 'Friend';
+                return _memberCard(
+                  person: person,
+                  otherId: otherId,
+                  name: name,
+                  rel: rel,
+                  isSharingWithThem: isSharingWithThem,
+                  theyShareWithMe: theyShareWithMe,
+                );
+              }),
+          ],
+        ),
+      ),
+    );
+  }
 
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 12),
-                  padding: const EdgeInsets.all(18),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: const Color(0xFFE2E8F0)),
-                    boxShadow: const [
-                      BoxShadow(color: Color(0x06000000), blurRadius: 10, offset: Offset(0, 3)),
-                    ],
-                  ),
+  /// Redesigned circle member card.
+  /// Three clear zones: identity row → sharing toggle → action bar.
+  /// Eliminates text overflow on narrow phones by keeping buttons out of the
+  /// identity row entirely.
+  Widget _memberCard({
+    required Map<String, dynamic> person,
+    required String otherId,
+    required String name,
+    required String rel,
+    required bool isSharingWithThem,
+    required bool theyShareWithMe,
+  }) {
+    // Derive accent color from relationship type for the Message button.
+    Color accentColor;
+    Color accentBg;
+    Color accentBorder;
+    switch (rel) {
+      case 'Partner':
+        accentColor  = const Color(0xFFE11D48);
+        accentBg     = const Color(0xFFFFF1F2);
+        accentBorder = const Color(0xFFFECDD3);
+        break;
+      case 'Family':
+        accentColor  = const Color(0xFF7C3AED);
+        accentBg     = const Color(0xFFF5F3FF);
+        accentBorder = const Color(0xFFDDD6FE);
+        break;
+      default: // Friend
+        accentColor  = const Color(0xFF1E60AA);
+        accentBg     = const Color(0xFFEFF6FF);
+        accentBorder = const Color(0xFFBFDBFE);
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: const [
+          BoxShadow(color: Color(0x06000000), blurRadius: 10, offset: Offset(0, 3)),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+
+          // ── Zone 1: Identity row ──────────────────────────────────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                KaSpotAvatar(
+                  name: name,
+                  avatarUrl: person['avatar_url'] as String?,
+                  size: 48,
+                  isCircle: true,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
                   child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // Name + relationship badge on the same line
                       Row(
                         children: [
-                          KaSpotAvatar(
-                            name: name,
-                            avatarUrl: person['avatar_url'] as String?,
-                            size: 44,
-                            isCircle: true,
-                          ),
-                          const SizedBox(width: 14),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  children: [
-                                    Flexible(
-                                      child: Text(
-                                        name,
-                                        style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: Color(0xFF0F172A)),
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    _relationshipBadge(
-                                      rel,
-                                      onTap: () => _changeCategorySheet(person),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 3),
-                                Row(
-                                  children: [
-                                    Container(
-                                      width: 7,
-                                      height: 7,
-                                      decoration: BoxDecoration(
-                                        shape: BoxShape.circle,
-                                        color: theyShareWithMe ? const Color(0xFF10B981) : const Color(0xFF94A3B8),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 6),
-                                    Text(
-                                      theyShareWithMe
-                                          ? 'Sharing their location with you'
-                                          : 'Not sharing their location',
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        color: theyShareWithMe ? const Color(0xFF059669) : const Color(0xFF64748B),
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ],
+                          Flexible(
+                            child: Text(
+                              name,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                                fontSize: 15.5,
+                                color: Color(0xFF0F172A),
+                              ),
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
-                              IconButton(
-                                icon: const Icon(Icons.chat_bubble_outline_rounded, color: Color(0xFF1E60AA)),
-                                tooltip: 'Chat & Updates',
-                                onPressed: () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (_) => CircleChatScreen(
-                                        otherId: otherId,
-                                        displayName: name,
-                                        avatarUrl: person['avatar_url'] as String?,
-                                        theyShareWithMe: theyShareWithMe,
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.more_horiz_rounded, color: Color(0xFF94A3B8)),
-                                tooltip: 'Options',
-                                onPressed: () => _showPersonOptions(person),
-                              ),
-                            ],
-                          ),
-                          const Divider(height: 24, color: Color(0xFFF1F5F9)),
-                          Row(
-                            children: [
-                              Icon(
-                                isSharingWithThem ? Icons.location_on_rounded : Icons.location_off_outlined,
-                                color: isSharingWithThem ? const Color(0xFF10B981) : const Color(0xFF94A3B8),
-                                size: 22,
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      isSharingWithThem ? 'You are sharing your location' : 'You are not sharing with them',
-                                      style: TextStyle(
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.w700,
-                                        color: isSharingWithThem ? const Color(0xFF0F172A) : const Color(0xFF64748B),
-                                      ),
-                                    ),
-                                    Text(
-                                      isSharingWithThem ? 'Can see your latest updates' : 'Location hidden from this person',
-                                      style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8)),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              Switch.adaptive(
-                                value: isSharingWithThem,
-                                activeTrackColor: const Color(0xFF10B981),
-                                onChanged: _busy
-                                    ? null
-                                    : (val) => _run(
-                                          () => _setSharing(otherId, val),
-                                          val ? 'Sharing enabled for this person.' : 'Sharing stopped.',
-                                        ),
-                              ),
-                            ],
+                          const SizedBox(width: 6),
+                          GestureDetector(
+                            onTap: () => _changeCategorySheet(person),
+                            child: _relationshipBadge(rel),
                           ),
                         ],
                       ),
-                    );
-                  }),
-          ],
-        ),
+                      const SizedBox(height: 4),
+                      // Their sharing status — compact single line, never overflows
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 6,
+                            height: 6,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: theyShareWithMe
+                                  ? const Color(0xFF10B981)
+                                  : const Color(0xFF94A3B8),
+                            ),
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            theyShareWithMe
+                                ? 'Sharing location with you'
+                                : 'Not sharing location',
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w600,
+                              color: theyShareWithMe
+                                  ? const Color(0xFF059669)
+                                  : const Color(0xFF94A3B8),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          const Divider(height: 1, color: Color(0xFFF1F5F9)),
+
+          // ── Zone 2: Location sharing toggle ─────────────────────────
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            child: Row(
+              children: [
+                Icon(
+                  isSharingWithThem
+                      ? Icons.location_on_rounded
+                      : Icons.location_off_outlined,
+                  color: isSharingWithThem
+                      ? const Color(0xFF10B981)
+                      : const Color(0xFF94A3B8),
+                  size: 20,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    isSharingWithThem
+                        ? 'You are sharing your location'
+                        : 'Location hidden from them',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: isSharingWithThem
+                          ? const Color(0xFF0F172A)
+                          : const Color(0xFF64748B),
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Switch.adaptive(
+                  value: isSharingWithThem,
+                  activeTrackColor: const Color(0xFF10B981),
+                  onChanged: _busy
+                      ? null
+                      : (val) => _run(
+                            () => _setSharing(otherId, val),
+                            val
+                                ? 'Sharing enabled for ${name.split(' ').first}.'
+                                : 'Sharing stopped.',
+                          ),
+                ),
+              ],
+            ),
+          ),
+
+          const Divider(height: 1, color: Color(0xFFF1F5F9)),
+
+          // ── Zone 3: Action bar ────────────────────────────────────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+            child: Row(
+              children: [
+                // Message button — full width, badge overlaid on top-right
+                Expanded(
+                  child: ValueListenableBuilder<Map<String, int>>(
+                    valueListenable: KaSpotService.unreadCounts,
+                    builder: (context, counts, _) {
+                      final unread = counts[otherId] ?? 0;
+                      final hasUnread = unread > 0;
+                      final btnColor   = hasUnread ? accentColor  : const Color(0xFF64748B);
+                      final btnBg      = hasUnread ? accentBg     : const Color(0xFFF8FAFC);
+                      final btnBorder  = hasUnread ? accentBorder : const Color(0xFFE2E8F0);
+
+                      return Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          GestureDetector(
+                            onTap: () async {
+                              await KaSpotService.markMessagesRead(otherId);
+                              if (!context.mounted) return;
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => CircleChatScreen(
+                                    otherId: otherId,
+                                    displayName: name,
+                                    avatarUrl: person['avatar_url'] as String?,
+                                    theyShareWithMe: theyShareWithMe,
+                                  ),
+                                ),
+                              );
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              decoration: BoxDecoration(
+                                color: btnBg,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: btnBorder),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    hasUnread
+                                        ? Icons.chat_bubble_rounded
+                                        : Icons.chat_bubble_outline_rounded,
+                                    color: btnColor,
+                                    size: 16,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'Message',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w700,
+                                      color: btnColor,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          // Unread count badge — top-right of the button
+                          if (hasUnread)
+                            Positioned(
+                              top: -6,
+                              right: -6,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 5, vertical: 2),
+                                constraints: const BoxConstraints(
+                                    minWidth: 20, minHeight: 20),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFEF4444),
+                                  borderRadius: BorderRadius.circular(10),
+                                  border:
+                                      Border.all(color: Colors.white, width: 1.5),
+                                ),
+                                child: Text(
+                                  unread > 99 ? '99+' : '$unread',
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w800,
+                                    color: Colors.white,
+                                    height: 1.1,
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // Options button
+                GestureDetector(
+                  onTap: () => _showPersonOptions(person),
+                  child: Container(
+                    width: 42,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF8FAFC),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: const Icon(
+                      Icons.more_horiz_rounded,
+                      color: Color(0xFF94A3B8),
+                      size: 20,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

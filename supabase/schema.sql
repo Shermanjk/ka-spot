@@ -281,13 +281,39 @@ grant select, insert, update, delete on public.locations to authenticated;
 grant select, insert, update, delete on public.saved_places to authenticated;
 grant select, insert, update, delete on public.notification_preferences to authenticated;
 
+-- ── FCM Device Tokens ──────────────────────────────────────────────────────
+-- Stores one row per (user, device token) pair. The Edge Function reads this
+-- table to look up where to deliver push notifications.
+create table if not exists public.device_tokens (
+  id          uuid primary key default gen_random_uuid(),
+  user_id     uuid not null references auth.users(id) on delete cascade,
+  token       text not null,
+  platform    text not null default 'android' check (platform in ('android', 'ios')),
+  updated_at  timestamptz not null default now(),
+  constraint device_tokens_user_token_unique unique (user_id, token)
+);
+
+alter table public.device_tokens enable row level security;
+
+-- Each user can only read and manage their own tokens.
+drop policy if exists device_tokens_owner on public.device_tokens;
+create policy device_tokens_owner on public.device_tokens
+  for all to authenticated
+  using  (user_id = (select auth.uid()))
+  with check (user_id = (select auth.uid()));
+
+grant select, insert, update, delete on public.device_tokens to authenticated;
+
 -- In-Circle Chat Messaging between accepted circle members
 create table if not exists public.circle_messages (
   id uuid primary key default gen_random_uuid(),
   sender_id uuid not null references auth.users(id) on delete cascade,
   recipient_id uuid not null references auth.users(id) on delete cascade,
   content text not null check (char_length(trim(content)) between 1 and 500),
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  -- Nullable: set by the recipient when they open the conversation.
+  -- Used to drive unread-message badges without a separate counter table.
+  read_at timestamptz default null
 );
 
 alter table public.circle_messages enable row level security;
@@ -309,11 +335,25 @@ with check (
 
 grant select, insert on public.circle_messages to authenticated;
 
+-- Allow the column to be added to an existing table (safe to re-run: no-op if already present).
+alter table public.circle_messages add column if not exists read_at timestamptz default null;
+
+-- Unread-badge support: the recipient may mark received messages as read.
+drop policy if exists circle_messages_recipient_mark_read on public.circle_messages;
+create policy circle_messages_recipient_mark_read on public.circle_messages
+  for update to authenticated
+  using  (recipient_id = (select auth.uid()))
+  with check (recipient_id = (select auth.uid()));
+
+grant select, insert, update on public.circle_messages to authenticated;
+
 -- Lookup user ID by short uppercase circle code (e.g. KS-E7BE-D662 or E7BED662)
+-- Both sides are normalised to uppercase hex so the comparison is case-insensitive.
 create or replace function public.lookup_user_by_code(code text)
 returns uuid language sql stable security definer set search_path = '' as $$
   select id from public.profiles
-  where replace(replace(upper(trim(code)), 'KS-', ''), '-', '') = substring(replace(id::text, '-', '') from 1 for 8)
+  where replace(replace(upper(trim(code)), 'KS-', ''), '-', '')
+        = upper(substring(replace(id::text, '-', '') from 1 for 8))
   limit 1;
 $$;
 revoke all on function public.lookup_user_by_code(text) from public;

@@ -49,6 +49,10 @@ class _HomeShellState extends State<HomeShell> {
           final content = newRecord['content'] as String? ?? '';
           if (senderId == null || senderId == myId) return;
 
+          // Always increment the unread counter so badge stays accurate even
+          // when the user is on a different tab or the in-app banner is missed.
+          KaSpotService.incrementUnread(senderId);
+
           final prefs = await KaSpotService.notificationPreferences();
           if (prefs['connection_notifications_enabled'] == false) return;
 
@@ -140,31 +144,38 @@ class _HomeShellState extends State<HomeShell> {
           const InAppNotificationBanner(),
         ],
       ),
-      bottomNavigationBar: InteractiveNavBar(
-        selectedIndex: _selected,
-        onTap: (index) => setState(() => _selected = index),
-        items: const [
-          InteractiveNavItem(
-            icon: Icons.explore_outlined,
-            selectedIcon: Icons.explore_rounded,
-            label: 'Map',
-          ),
-          InteractiveNavItem(
-            icon: Icons.people_outline_rounded,
-            selectedIcon: Icons.people_rounded,
-            label: 'Circle',
-          ),
-          InteractiveNavItem(
-            icon: Icons.place_outlined,
-            selectedIcon: Icons.place_rounded,
-            label: 'Places',
-          ),
-          InteractiveNavItem(
-            icon: Icons.person_outline_rounded,
-            selectedIcon: Icons.person_rounded,
-            label: 'You',
-          ),
-        ],
+      bottomNavigationBar: ValueListenableBuilder<Map<String, int>>(
+        valueListenable: KaSpotService.unreadCounts,
+        builder: (context, counts, _) {
+          final totalUnread = counts.values.fold(0, (s, n) => s + n);
+          return InteractiveNavBar(
+            selectedIndex: _selected,
+            onTap: (index) => setState(() => _selected = index),
+            items: [
+              const InteractiveNavItem(
+                icon: Icons.explore_outlined,
+                selectedIcon: Icons.explore_rounded,
+                label: 'Map',
+              ),
+              InteractiveNavItem(
+                icon: Icons.people_outline_rounded,
+                selectedIcon: Icons.people_rounded,
+                label: 'Circle',
+                badgeCount: totalUnread,
+              ),
+              const InteractiveNavItem(
+                icon: Icons.place_outlined,
+                selectedIcon: Icons.place_rounded,
+                label: 'Places',
+              ),
+              const InteractiveNavItem(
+                icon: Icons.person_outline_rounded,
+                selectedIcon: Icons.person_rounded,
+                label: 'You',
+              ),
+            ],
+          );
+        },
       ),
     );
   }
