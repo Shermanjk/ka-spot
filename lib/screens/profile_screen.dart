@@ -7,6 +7,7 @@ import '../services/background_location_service.dart';
 import '../services/kaspot_service.dart';
 import '../utils/image_optimizer.dart';
 import '../widgets/kaspot_avatar.dart';
+import 'privacy_policy_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -643,6 +644,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
           // 4. App & Support Section
           _heading('About KaSpot'),
           _SettingsGroup(children: [
+            _SettingsTile(
+              icon: Icons.privacy_tip_outlined,
+              iconColor: const Color(0xFF10B981),
+              title: 'Privacy Policy',
+              subtitle: 'How KaSpot handles your data',
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const PrivacyPolicyScreen()),
+              ),
+            ),
             _SettingsTile(
               icon: Icons.info_outline_rounded,
               iconColor: const Color(0xFF64748B),

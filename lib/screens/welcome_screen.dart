@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../widgets/circle_trust_illustration.dart';
 import '../widgets/kaspot_logo.dart';
+import 'privacy_policy_screen.dart';
 import 'register_screen.dart';
 import 'sign_in_screen.dart';
 
@@ -204,6 +205,29 @@ class WelcomeScreen extends StatelessWidget {
                           ),
                         ),
                       ],
+                    ),
+
+                    SizedBox(height: isSmallScreen ? 10 : 14),
+
+                    // 8. Privacy Policy link
+                    GestureDetector(
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const PrivacyPolicyScreen(),
+                        ),
+                      ),
+                      child: const Text(
+                        'Privacy Policy',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF1E60AA),
+                          decoration: TextDecoration.underline,
+                          decorationColor: Color(0xFF1E60AA),
+                        ),
+                      ),
                     ),
                   ],
                 ),
